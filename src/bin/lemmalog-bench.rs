@@ -2,22 +2,33 @@
 //!
 //! Two commands:
 //!   lemmalog-bench ingest  <conv.json> <snapshot-path>   # extraction (Claude,
-//!     chunked, file-cached) + update policy + derived rules -> snapshot
-//!   lemmalog-bench context <snapshot-path> <question>    # hybrid retrieval ->
-//!     prints the assembled memory context for the standardized reader
+//!     chunked, file-cached) + update policy + derived rules + date
+//!     normalization + entity reconciliation -> snapshot
+//!   lemmalog-bench context <snapshot-path> <question>    # hybrid retrieval
+//!     (BM25 + graph boosts + embedding rerank) -> assembled memory context
+//!   lemmalog-bench recall  <snapshot-path> <question>    # targeted re-read
+//!     fallback when the structured store lacks the answer
 //!
 //! The conv.json format is MemEval's normalized LoCoMo shape (session_N keys
-//! with {speaker, text} turns and session_N_date_time).
+//! with {speaker, text} turns and session_N_date_time) or raw LoCoMo
+//! ("1:56 pm on 8 May, 2023" dates).
 //!
-//! Env: ANTHROPIC_API_KEY (extraction), LEMMALOG_EXTRACT_MODEL (default
-//! claude-sonnet-4-6), LEMMALOG_CACHE_DIR (extraction cache: pay once,
-//! rerun free), LEMMALOG_CONTEXT_BUDGET (default 1800).
+//! Env: ANTHROPIC_API_KEY (extraction + reconciliation), LEMMALOG_EXTRACT_MODEL
+//! (default claude-sonnet-4-6), LEMMALOG_CACHE_DIR (extraction cache: pay
+//! once, rerun free), LEMMALOG_CONTEXT_BUDGET (default 1800),
+//! LEMMALOG_EMBED_BASE (embedding endpoint for the semantic rerank and
+//! reconciliation candidate gating; default local LM Studio nomic, "off"
+//! disables).
 
 #![cfg(feature = "llm")]
 
-use lemmalog::agent::{AgentMemory, Episode, MockExtractor};
+use lemmalog::agent::{AgentMemory, MockExtractor};
+use lemmalog::canonical;
+use lemmalog::eval::Engine;
+use lemmalog::intern::Value;
 use lemmalog::llm::{LlmClientExtractor, OpenAiClient};
-use lemmalog::retrieval::tokenize_pub;
+use lemmalog::retrieval::{tokenize_pub, Retrieval};
+use lemmalog::semantics::Embedder as _;
 use serde_json::Value as J;
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -49,35 +60,60 @@ fn main() {
             print!("{recalled}");
         }
         _ => {
-            eprintln!("usage: lemmalog-bench ingest|context ...");
+            eprintln!("usage: lemmalog-bench ingest|context|recall ...");
             std::process::exit(2);
         }
     }
 }
 
-/// "2023/04/10 (Mon) 17:50" -> monotonic minutes (matches the runner).
+/// "2023/04/10 (Mon) 17:50" or LoCoMo's "1:56 pm on 8 May, 2023" ->
+/// monotonic minutes (matches the runner).
 fn parse_date(s: &str) -> i64 {
     let parts: Vec<&str> = s.split_whitespace().collect();
-    let (d, t) = (
-        parts.first().copied().unwrap_or("0/0/0"),
-        parts.get(3).copied().unwrap_or("0:0"),
-    );
-    let dp: Vec<i64> = d.split('/').filter_map(|x| x.parse().ok()).collect();
-    let tp: Vec<i64> = t.split(':').filter_map(|x| x.parse().ok()).collect();
-    (((dp.first().copied().unwrap_or(0) * 366
-        + dp.get(1).copied().unwrap_or(0) * 31
-        + dp.get(2).copied().unwrap_or(0))
-        * 24
-        + tp.first().copied().unwrap_or(0))
-        * 60)
-        + tp.get(1).copied().unwrap_or(0)
+    // normalized MemEval shape: date first, time at index 3 (or absent)
+    if let Some(d) = parts.first() {
+        if d.contains('/') {
+            let t = parts.get(3).copied().unwrap_or("0:0");
+            let dp: Vec<i64> = d.split('/').filter_map(|x| x.parse().ok()).collect();
+            let tp: Vec<i64> = t.split(':').filter_map(|x| x.parse().ok()).collect();
+            return (((dp.first().copied().unwrap_or(0) * 366
+                + dp.get(1).copied().unwrap_or(0) * 31
+                + dp.get(2).copied().unwrap_or(0))
+                * 24
+                + tp.first().copied().unwrap_or(0))
+                * 60)
+                + tp.get(1).copied().unwrap_or(0);
+        }
+    }
+    // raw LoCoMo: "1:56 pm on 8 May, 2023"
+    const MONTHS: [&str; 12] = [
+        "january", "february", "march", "april", "may", "june", "july",
+        "august", "september", "october", "november", "december",
+    ];
+    let lower = s.to_lowercase();
+    if let Some(pos) = lower.find(" on ") {
+        let date_part = &lower[pos + 4..];
+        let toks: Vec<&str> = date_part.split_whitespace().collect();
+        if toks.len() >= 3 {
+            let day: i64 = toks[0].trim_end_matches(',').parse().unwrap_or(0);
+            let mon = MONTHS
+                .iter()
+                .position(|m| toks[1].trim_end_matches(',').starts_with(m))
+                .unwrap_or(0) as i64
+                + 1;
+            let year: i64 = toks[2].trim_end_matches(',').parse().unwrap_or(0);
+            return (year * 366 + mon * 31 + day) * 24 * 60;
+        }
+    }
+    0
 }
 
 const RULES: &str = "\
 current(E,R,O) :- edge(E,R,O,VF,VT,_), now(T), VF =< T, T < VT.\n\
 reports_to(X,Y) :- current(X,\"manager\",Y).\n\
 trans: reports_to(X,Z) :- reports_to(X,Y), reports_to(Y,Z).\n\
-happened_before(A, B) :- dated(A, D1), dated(B, D2), D1 < D2.\n\
+first_dated(A, min(D)) :- dated(A, D).\n\
+happened_before(A, B) :- first_dated(A, D1), first_dated(B, D2), A \\= B, D1 < D2.\n\
 stated_before(X, Y) :- current(X, \"before\", Y).\n\
 stated_before(X, Z) :- stated_before(X, Y), stated_before(Y, Z).\n";
 
@@ -85,6 +121,16 @@ fn client() -> OpenAiClient {
     let model = std::env::var("LEMMALOG_EXTRACT_MODEL")
         .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
     OpenAiClient::new("https://api.anthropic.com/v1", &model, "")
+}
+
+fn embed_base() -> Option<String> {
+    let b = std::env::var("LEMMALOG_EMBED_BASE")
+        .unwrap_or_else(|_| "http://localhost:1234/v1".to_string());
+    if b.is_empty() || b == "off" {
+        None
+    } else {
+        Some(b)
+    }
 }
 
 fn ingest(conv_path: &str, snap: &str) {
@@ -145,26 +191,37 @@ fn ingest(conv_path: &str, snap: &str) {
         m.maintain(ts);
         eprintln!("  session {num}: +{} facts", report.added);
     }
-    // date-shaped relations -> dated/2 (the runner's data-driven ordering)
-    let mut order_rules = String::new();
-    let mut checked: Vec<String> = Vec::new();
+    // normalize date-shaped objects to comparable integers: dated/2 feeds
+    // happened_before, and the engine's `<` on symbols compares intern ids,
+    // not date text — so dates must be Ints to order correctly
+    let mut dated_count = 0usize;
     for key in m.engine.relation_keys("current") {
         if key.len() != 3 {
             continue;
         }
-        let r = m.engine.interner.display(&key[1]).to_string();
-        if checked.contains(&r) {
-            continue;
-        }
-        checked.push(r.clone());
-        let obj = m.engine.interner.display(&key[2]);
-        if obj.len() == 10 && obj.as_bytes()[4] == b'-' && obj.as_bytes()[7] == b'-' {
-            order_rules.push_str(&format!("dated(S, D) :- current(S, \"{r}\", D).\n"));
+        let obj = m.engine.interner.display(&key[2]).to_string();
+        if let Some(n) = lemmalog::longmemeval::date_to_int(&obj) {
+            let subj = key[0];
+            if m
+                .engine
+                .declare("dated", &[subj, Value::Int(n)], lemmalog::eval::Ann::base(0.95, ["date_norm"]))
+            {
+                dated_count += 1;
+            }
         }
     }
-    if !order_rules.is_empty() {
-        let _ = m.engine.install_program(&order_rules);
-    }
+    eprintln!("  temporal: {dated_count} dated facts normalized");
+    // entity reconciliation: canonical rules + alias pass (one LLM call)
+    m.engine
+        .install_program(canonical::CANONICAL_RULES)
+        .expect("canonical rules");
+    m.engine.seed_entities(&["current"]);
+    let aliases = reconcile(&mut m.engine, embed_base().as_deref());
+    eprintln!(
+        "  reconcile: {} aliases asserted, {} conflicts",
+        aliases.len(),
+        canonical::alias_conflicts(&m.engine).len()
+    );
     let last_ts = sessions
         .values()
         .map(|(d, _)| parse_date(d))
@@ -180,7 +237,122 @@ fn ingest(conv_path: &str, snap: &str) {
     );
 }
 
-/// Counting-shaped questions get a different context: count aggregates
+/// One entity-reconciliation pass over `current`: collect entity names,
+/// build candidate pairs (substring containment, same (subject, relation)
+/// co-objects, embedding-similar), confirm with one LLM call, assert
+/// star-shaped alias edges. Returns the asserted aliases.
+fn reconcile(e: &mut Engine, embed: Option<&str>) -> Vec<(String, String, f64)> {
+    let mut names: Vec<String> = Vec::new();
+    for key in e.relation_keys("current") {
+        if key.len() != 3 {
+            continue;
+        }
+        for pos in [0usize, 2] {
+            let n = e.interner.display(&key[pos]).to_string();
+            // dates and bare numbers are not entity names to merge
+            if n.chars().any(|c| c.is_alphabetic()) && !names.contains(&n) {
+                names.push(n);
+            }
+        }
+    }
+    if names.len() < 2 {
+        return Vec::new();
+    }
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut push = |pairs: &mut Vec<(String, String)>, a: &str, b: &str| {
+        let (a, b) = (a.to_string(), b.to_string());
+        if a == b {
+            return;
+        }
+        let flipped = (a.clone(), b.clone());
+        let seen = pairs.iter().any(|(x, y)| {
+            (x == &a && y == &b) || (x == &flipped.0 && y == &flipped.1)
+        });
+        if !seen {
+            pairs.push((a, b));
+        }
+    };
+    // 1. substring containment: "civic" in "honda civic"
+    for i in 0..names.len() {
+        for j in i + 1..names.len() {
+            let (la, lb) = (names[i].to_lowercase(), names[j].to_lowercase());
+            if la.len() >= 3 && lb.len() >= 3 && (la.contains(&lb) || lb.contains(&la)) {
+                push(&mut pairs, &names[i], &names[j]);
+            }
+        }
+    }
+    // 2. co-reference slots: same (subject, relation), different objects —
+    // "owns(user, honda civic)" vs "owns(user, the car)"
+    let mut slots: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    for key in e.relation_keys("current") {
+        if key.len() != 3 {
+            continue;
+        }
+        let s = e.interner.display(&key[0]).to_string();
+        let r = e.interner.display(&key[1]).to_string();
+        let o = e.interner.display(&key[2]).to_string();
+        if o.chars().any(|c| c.is_alphabetic()) {
+            let v = slots.entry((s, r)).or_default();
+            if !v.contains(&o) {
+                v.push(o);
+            }
+        }
+    }
+    for objs in slots.values() {
+        if objs.len() > 1 && objs.len() <= 8 {
+            for i in 0..objs.len() {
+                for j in i + 1..objs.len() {
+                    push(&mut pairs, &objs[i], &objs[j]);
+                }
+            }
+        }
+    }
+    // 3. embedding-similar pairs (local nomic): cosine gate, as in
+    // canonical::reconcile — semantic near-duplicates the string passes miss
+    if let Some(base) = embed {
+        let embedder = lemmalog::llm::HttpEmbedder::new(
+            base,
+            "text-embedding-nomic-embed-text-v1.5",
+        );
+        let vecs: Vec<Vec<f32>> = names.iter().map(|n| embedder.embed(n)).collect();
+        if !vecs.iter().any(|v| v.is_empty()) {
+            for i in 0..names.len() {
+                for j in i + 1..names.len() {
+                    let cos = lemmalog::semantics::cosine_pub(&vecs[i], &vecs[j]);
+                    if cos > 0.72 {
+                        push(&mut pairs, &names[i], &names[j]);
+                    }
+                }
+            }
+        }
+    }
+    pairs.truncate(120);
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+    let listing = pairs
+        .iter()
+        .map(|(a, b)| format!("- {a} | {b}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let chat = client();
+    let Ok(out) = chat.chat(
+        canonical::reconcile::RECONCILE_PROMPT,
+        &format!("Candidate pairs:\n{listing}\n\nLines only:"),
+    ) else {
+        return Vec::new();
+    };
+    let mut asserted = Vec::new();
+    for f in lemmalog::agent::parse_protocol_strict(&out, 0.8) {
+        if f.pred == "alias_of" {
+            canonical::assert_alias(e, &f.subj, &f.obj, f.confidence);
+            asserted.push((f.subj, f.obj, f.confidence));
+        }
+    }
+    asserted
+}
+
+/// "Counting-shaped" questions get a different context: count aggregates
 /// (via the aggregation engine) plus more raw episode text — gpt-4.1
 /// counts from prose better than our fact count when extraction misses
 /// enumerable items, so give it both.
@@ -262,6 +434,49 @@ fn counting_context(m: &mut AgentMemory<MockExtractor>, question: &str) -> Strin
     format!("{out}\n{base}")
 }
 
+/// Fact and question embeddings for the semantic rerank, with a
+/// snapshot-side file cache ({snap}.embed.json) so the ~2K facts embed
+/// once per conversation, not once per question. Returns None when the
+/// embedding endpoint is off or unreachable (plain BM25 selection).
+fn semantic_embeds(snap: &str, r: &Retrieval, question: &str) -> Option<(Vec<Vec<f32>>, Vec<f32>)> {
+    let base = embed_base()?;
+    let embedder = lemmalog::llm::HttpEmbedder::new(
+        &base,
+        "text-embedding-nomic-embed-text-v1.5",
+    );
+    let cache_path = format!("{snap}.embed.json");
+    let mut cache: std::collections::HashMap<String, Vec<f32>> = std::fs::read_to_string(&cache_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let renders = r.fact_renders();
+    let mut embeds: Vec<Vec<f32>> = Vec::with_capacity(renders.len());
+    let mut missing = 0usize;
+    for line in &renders {
+        let v = match cache.get(line) {
+            Some(v) if !v.is_empty() => v.clone(),
+            _ => {
+                missing += 1;
+                let v = embedder.embed(line);
+                if v.is_empty() {
+                    return None; // endpoint down: degrade, don't poison
+                }
+                cache.insert(line.clone(), v.clone());
+                v
+            }
+        };
+        embeds.push(v);
+    }
+    if missing > 0 {
+        let _ = std::fs::write(&cache_path, serde_json::to_string(&cache).unwrap_or_default());
+    }
+    let q = embedder.embed(question);
+    if q.is_empty() {
+        return None;
+    }
+    Some((embeds, q))
+}
+
 fn context(snap: &str, question: &str) -> String {
     let mut m = AgentMemory::load(MockExtractor::new(0.9), snap).expect("load snapshot");
     let _ = m.maintain(m.engine.now);
@@ -272,13 +487,18 @@ fn context(snap: &str, question: &str) -> String {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1800);
-    let base = m.context_for_query(question, budget);
+    let r = Retrieval::build(&m.engine, m.episodes());
+    let sel = match semantic_embeds(snap, &r, question) {
+        Some((fe, q)) => r.select_semantic(question, budget, &fe, &q),
+        None => r.select(question, budget),
+    };
+    let mut base = r.render(&sel);
 
     let dates: BTreeMap<String, String> = std::fs::read_to_string(format!("{snap}.dates.json"))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-    let date_of = |v: &lemmalog::Value| -> String {
+    let date_of = |v: &Value| -> String {
         match v.as_int() {
             Some(ts) if ts > 0 && ts != i64::MAX => dates
                 .get(&ts.to_string())
@@ -313,13 +533,92 @@ fn context(snap: &str, question: &str) -> String {
             date_of(&key[5]),
         ));
     }
-    if hist.is_empty() {
-        base
-    } else {
-        format!(
-            "{base}\nEDGE HISTORY: subject --relation--> object, valid_from .. valid_to (asserted at):\n{hist}"
-        )
+    if !hist.is_empty() {
+        base.push_str(&format!(
+            "\nEDGE HISTORY: subject --relation--> object, valid_from .. valid_to (asserted at):\n{hist}"
+        ));
     }
+    // reconciled aliases: shown to the reader only at high confidence —
+    // wrong equalities actively mislead, so the risky merges stay
+    // retrieval-side (bridge boosts) and never render
+    let alias_lines: Vec<String> = m
+        .engine
+        .relation_keys("alias")
+        .iter()
+        .filter_map(|k| {
+            let conf = m
+                .engine
+                .fact("alias", k)
+                .map(|f| f.ann.conf)
+                .unwrap_or(0.0);
+            if conf < 0.9 {
+                return None;
+            }
+            let (a, b) = (
+                m.engine.interner.display(&k[0]).to_string(),
+                m.engine.interner.display(&k[1]).to_string(),
+            );
+            let relevant = tokenize_pub(&a)
+                .iter()
+                .chain(tokenize_pub(&b).iter())
+                .any(|t| t.len() >= 3 && qtokens.contains(t));
+            relevant.then(|| format!("{a} = {b}"))
+        })
+        .take(12)
+        .collect();
+    if !alias_lines.is_empty() {
+        base.push_str(&format!(
+            "\nENTITY ALIASES (same entity, reconciled):\n{}\n",
+            alias_lines.join("\n")
+        ));
+    }
+    // mention timeline: when question entities FIRST appeared in the
+    // conversation. Explicitly labeled as mention order — mention time is
+    // not event time (a later turn can describe an earlier event)
+    let mut first_seen: BTreeMap<String, i64> = BTreeMap::new();
+    for key in m.engine.relation_keys("edge") {
+        let ts = key[5].as_int().unwrap_or(i64::MAX);
+        for pos in [0usize, 2] {
+            if let Value::Sym(_) = &key[pos] {
+                let n = m.engine.interner.display(&key[pos]).to_string();
+                if !n.chars().any(|c| c.is_alphabetic()) {
+                    continue;
+                }
+                let e = first_seen.entry(n).or_insert(ts);
+                if ts < *e {
+                    *e = ts;
+                }
+            }
+        }
+    }
+    let mut timeline: Vec<(i64, String)> = first_seen
+        .iter()
+        .filter(|(n, _)| {
+            tokenize_pub(n)
+                .into_iter()
+                .any(|t| t.len() >= 3 && qtokens.contains(&t))
+        })
+        .map(|(n, ts)| (*ts, n.clone()))
+        .collect();
+    timeline.sort();
+    if !timeline.is_empty() {
+        let lines: Vec<String> = timeline
+            .iter()
+            .take(15)
+            .map(|(ts, n)| {
+                let d = dates
+                    .get(&ts.to_string())
+                    .cloned()
+                    .unwrap_or_else(|| ts.to_string());
+                format!("{n} first mentioned {d}")
+            })
+            .collect();
+        base.push_str(&format!(
+            "\nMENTION TIMELINE (first mention in conversation; mention order is NOT event order):\n{}\n",
+            lines.join("\n")
+        ));
+    }
+    base
 }
 
 /// Recall fallback: when the memory lacks the answer, run ONE targeted

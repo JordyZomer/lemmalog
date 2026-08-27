@@ -169,6 +169,24 @@ pub struct Selection {
     pub used_tokens: usize,
 }
 
+fn find(parent: &mut BTreeMap<String, String>, x: &str) -> String {
+    let root = match parent.get(x).cloned() {
+        Some(p) if p != x => find(parent, &p),
+        _ => x.to_string(),
+    };
+    parent.insert(x.to_string(), root.clone());
+    root
+}
+
+fn union(parent: &mut BTreeMap<String, String>, a: &str, b: &str) {
+    parent.entry(a.to_string()).or_insert_with(|| a.to_string());
+    parent.entry(b.to_string()).or_insert_with(|| b.to_string());
+    let (ra, rb) = (find(parent, a), find(parent, b));
+    if ra != rb {
+        parent.insert(ra, rb);
+    }
+}
+
 impl Retrieval {
     /// Build the index from the engine's current state and the episode
     /// log. O(facts + episodes); rebuild per query is fine at agent scale.
@@ -234,6 +252,35 @@ impl Retrieval {
                 .or_default()
                 .insert(b.clone());
         }
+        // alias clusters bridge adjacency: after reconciliation, "car" and
+        // "honda_civic" become one-hop neighbors even though facts stay
+        // raw — a query naming one boosts the other's facts
+        let mut parent: BTreeMap<String, String> = BTreeMap::new();
+        for key in engine.relation_keys("alias") {
+            let (a, b) = (
+                engine.interner.display(&key[0]).to_string(),
+                engine.interner.display(&key[1]).to_string(),
+            );
+            union(&mut parent, &a, &b);
+        }
+        let mut clusters: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let names: Vec<String> = parent.keys().cloned().collect();
+        for name in &names {
+            let root = find(&mut parent, name);
+            clusters.entry(root).or_default().push(name.clone());
+        }
+        for members in clusters.values() {
+            for a in members {
+                for b in members {
+                    if a != b {
+                        neighbors
+                            .entry(a.clone())
+                            .or_default()
+                            .insert(b.clone());
+                    }
+                }
+            }
+        }
         let fact_texts: Vec<String> = facts.iter().map(|f| f.render.clone()).collect();
         let ep_texts: Vec<String> = episodes.iter().map(|e| e.text.clone()).collect();
         Retrieval {
@@ -270,10 +317,39 @@ impl Retrieval {
         (direct, hops)
     }
 
+    /// Rendered fact lines in index order — callers embedding facts for
+    /// [`Retrieval::select_semantic`] must align with this order.
+    pub fn fact_renders(&self) -> Vec<String> {
+        self.facts.iter().map(|f| f.render.clone()).collect()
+    }
+
     /// Score, rank, and budget: facts by BM25 + entity boosts; then the
     /// selected facts' provenance episodes plus the top BM25 episodes fill
     /// the remaining budget.
     pub fn select(&self, query: &str, budget_tokens: usize) -> Selection {
+        self.select_scored(query, budget_tokens, None)
+    }
+
+    /// Hybrid selection with an embedding rerank fused into fact scoring:
+    /// score = normalized BM25 + entity boosts + cosine(query, fact) when
+    /// the cosine clears a noise floor. BM25 can't bridge "kitchen gadget"
+    /// to "Instant Pot"; the vector half can.
+    pub fn select_semantic(
+        &self,
+        query: &str,
+        budget_tokens: usize,
+        fact_embeds: &[Vec<f32>],
+        query_embed: &[f32],
+    ) -> Selection {
+        self.select_scored(query, budget_tokens, Some((fact_embeds, query_embed)))
+    }
+
+    fn select_scored(
+        &self,
+        query: &str,
+        budget_tokens: usize,
+        sem: Option<(&[Vec<f32>], &[f32])>,
+    ) -> Selection {
         let bm25 = self.fact_bm25.scores(query);
         let (direct, hops) = self.query_entities(query);
         let mut max_bm25 = 0.0f64;
@@ -293,6 +369,16 @@ impl Retrieval {
                         s += 1.5; // the query names this entity
                     } else if hops.contains(e) {
                         s += 0.4; // one hop from a named entity
+                    }
+                }
+                if let Some((embeds, q)) = sem {
+                    if let Some(v) = embeds.get(i) {
+                        // unrelated short texts still cosine ~0.1-0.2 with
+                        // nomic; below the floor the term is noise
+                        let c = crate::semantics::cosine_pub(v, q) as f64;
+                        if c > 0.2 {
+                            s += c;
+                        }
                     }
                 }
                 (i, s)

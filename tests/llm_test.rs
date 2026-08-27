@@ -217,3 +217,20 @@ fn file_cached_extractor_roundtrip() {
     assert_eq!(*calls.lock().unwrap(), 1, "no additional model call");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn date_objects_normalize_to_comparable_ints() {
+    use lemmalog::longmemeval::date_to_int;
+    assert_eq!(date_to_int("2019"), Some(20190000));
+    assert_eq!(date_to_int("2019-03"), Some(20190300));
+    assert_eq!(date_to_int("2019-03-14"), Some(20190314));
+    // ordering across granularities holds
+    assert!(date_to_int("2019").unwrap() < date_to_int("2019-03").unwrap());
+    assert!(date_to_int("2019-03").unwrap() < date_to_int("2019-03-14").unwrap());
+    assert!(date_to_int("2019-03-14").unwrap() < date_to_int("2020-01").unwrap());
+    // not dates: natural language, ids, partial junk
+    assert_eq!(date_to_int("last week"), None);
+    assert_eq!(date_to_int("2019-3"), None);
+    assert_eq!(date_to_int("12345"), None);
+    assert_eq!(date_to_int("20190314"), None);
+}

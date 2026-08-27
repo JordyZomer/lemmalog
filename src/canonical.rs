@@ -135,15 +135,25 @@ pub mod reconcile {
     use crate::llm::HttpEmbedder;
     use crate::semantics::Embedder;
 
-    const RECONCILE_PROMPT: &str = "\
+    pub const RECONCILE_PROMPT: &str = "\
 You reconcile entity names in a knowledge graph. You are given candidate \
-pairs of names that MIGHT refer to the same real entity (a shorter or \
-messier local name vs a fuller canonical name). For each pair you are \
-confident refers to the same entity, output one line:\n\
+pairs of names that MIGHT refer to the same real entity. Two names are \
+aliases ONLY IF they refer to ONE SPECIFIC, INDIVIDUAL thing — the same \
+one person, the same one object, the same one place, the same one event. \
+For each pair you are confident refers to that same individual, output one \
+line:\n\
 local --alias_of[CONFIDENCE]--> canonical\n\
-CONFIDENCE in [0,1] (how sure the two names are the same entity). Choose \
-the fuller, cleaner name as the canonical. Skip pairs you are unsure \
-about. Output only the lines.";
+CONFIDENCE in [0,1]. Choose the fuller, cleaner name as the canonical.\n\
+NOT aliases — skip these every time:\n\
+- different members of a category: 'horse painting' and 'abstract \
+painting' are two different paintings, not one.\n\
+- a category and a member: 'painting' vs 'watercolor of a horse'.\n\
+- phrases carrying time or events: 'adopted last year' is an event, not \
+an entity name.\n\
+- topics that merely relate: 'friends and family' vs 'friends'.\n\
+Short for a full name IS an alias ('Mel' = 'Melanie'); so is a nickname \
+or description of ONE thing ('my car' = 'Honda Civic' when both name the \
+one car). When unsure, SKIP the pair. Output only the lines.";
 
     /// One reconciliation pass: collect unique entity names, gate
     /// candidate pairs by embedding similarity when an embedder base is

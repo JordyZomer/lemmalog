@@ -111,3 +111,57 @@ fn context_for_query_end_to_end() {
         assert!(first_alice < c, "alice facts rank above carol's: {facts_section}");
     }
 }
+
+#[test]
+fn alias_edges_bridge_retrieval_adjacency() {
+    let mut m = mem();
+    m.observe_at("mel --owns--> honda_civic", 100);
+    m.observe_at("mel --fixed--> the_car", 200);
+    m.maintain(200);
+    // reconcile decided "the_car" is the Civic
+    lemmalog::canonical::install_canonicalization(&mut m.engine, &["current"]).unwrap();
+    lemmalog::canonical::assert_alias(&mut m.engine, "the_car", "honda_civic", 0.9);
+    m.maintain(200);
+    let r = Retrieval::build(&m.engine, m.episodes());
+    // query names the canonical entity: the raw "the_car" fact gets the
+    // one-hop boost through the alias edge, so it is selected
+    let sel = r.select("what happened to the honda_civic", 600);
+    let renders: Vec<&str> = sel.fact_lines.iter().map(|(l, _)| l.as_str()).collect();
+    assert!(
+        renders.iter().any(|l| l.contains("the_car")),
+        "alias bridged: {renders:?}"
+    );
+}
+
+#[test]
+fn semantic_rerank_surfaces_lexical_gaps() {
+    let mut m = mem();
+    // BM25 has no bridge between "kitchen gadget" and "Instant Pot"
+    m.observe_at("mel --owns--> instant_pot\nmel --lives_in--> berlin", 100);
+    m.maintain(100);
+    let r = Retrieval::build(&m.engine, m.episodes());
+    let plain = r.select("kitchen gadget", 600);
+    assert!(
+        !plain.fact_lines.iter().any(|(l, _)| l.contains("instant_pot")),
+        "baseline: BM25 finds nothing: {:?}",
+        plain.fact_lines
+    );
+    // hand-built embeddings: "kitchen gadget" ~ instant_pot line, far from berlin
+    let renders = r.fact_renders();
+    let fact_embeds: Vec<Vec<f32>> = renders
+        .iter()
+        .map(|l| {
+            if l.contains("instant_pot") {
+                vec![0.9, 0.1]
+            } else {
+                vec![0.1, 0.9]
+            }
+        })
+        .collect();
+    let sel = r.select_semantic("kitchen gadget", 600, &fact_embeds, &[0.95, 0.05]);
+    assert!(
+        sel.fact_lines.iter().any(|(l, _)| l.contains("instant_pot")),
+        "semantic fusion surfaces the instant pot: {:?}",
+        sel.fact_lines
+    );
+}

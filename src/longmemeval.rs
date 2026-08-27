@@ -173,12 +173,44 @@ short snake_case verb phrase (works_at, drives, owns, lives_in, \
 allergic_to, bought, booked, likes, ...). Extract quantitative facts too: \
 personal bests, times, prices, quantities, dates (time_5k, commute_time, \
 price_paid, ...). If the episode contains a list, roster, or schedule, \
-extract one triple per row (rotation, shift, assignment, ...). SUBJECT and \
-OBJECT must be real entity names exactly as written in the episode: NEVER \
-a pronoun or a role word - always the full name. Output ONLY the triple \
-lines: no reasoning, no explanations, no bullets. Skip opinions and small \
-talk.\n\
+extract one triple per row (rotation, shift, assignment, ...).\n\
+Temporal: when the episode states WHEN something happened or will happen \
+(a full date, 'in 2019', 'last March', 'next week'), extract one triple \
+with a normalized date object in YYYY, YYYY-MM, or YYYY-MM-DD form \
+(visited_on, moved_on, starts_on, planned_for). When it states that one \
+thing happened before another, extract A --before--> B. Never guess a \
+date or an ordering the text does not state.\n\
+Preferences: unconditional likes are likes. Conditional preferences ('I \
+prefer lively places when I'm with friends') are prefers_when with the \
+condition as the object. Never assert the condition itself as a fact \
+unless the episode states it currently holds.\n\
+SUBJECT and OBJECT must be real entity names exactly as written in the \
+episode: NEVER a pronoun or a role word - always the full name. Output \
+ONLY the triple lines: no reasoning, no explanations, no bullets. Skip \
+opinions and small talk.\n\
 Episode:\n";
+
+/// A normalized date object as extracted by the open-vocab prompt: YYYY,
+/// YYYY-MM, or YYYY-MM-DD. Returns a comparable integer (YYYYMMDD, with
+/// missing parts zero) so Datalog `<` compares real time, not interning
+/// order (symbol comparison in the engine is by intern id).
+pub fn date_to_int(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let digits =
+        |r: std::ops::Range<usize>| b.get(r).map(|x| x.iter().all(|d| d.is_ascii_digit())).unwrap_or(false);
+    let (y, m, d) = if s.len() == 10 && b[4] == b'-' && b[7] == b'-'
+        && digits(0..4) && digits(5..7) && digits(8..10)
+    {
+        (&s[0..4], &s[5..7], &s[8..10])
+    } else if s.len() == 7 && b[4] == b'-' && digits(0..4) && digits(5..7) {
+        (&s[0..4], &s[5..7], "00")
+    } else if s.len() == 4 && digits(0..4) {
+        (&s[0..4], "00", "00")
+    } else {
+        return None;
+    };
+    Some(y.parse::<i64>().ok()? * 10000 + m.parse::<i64>().ok()? * 100 + d.parse::<i64>().ok()?)
+}
 
 fn episode_text(s: &Session) -> String {
     let mut out = format!("Session {} on {}:\n", s.id, s.date);
