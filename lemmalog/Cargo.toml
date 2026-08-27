@@ -1,0 +1,34 @@
+[package]
+name = "lemmalog"
+version = "0.1.0"
+edition = "2021"
+description = "A Datalog engine for LLM context management: bi-temporal, provenance-annotated, incrementally maintained."
+license = "MIT"
+
+[dependencies]
+serde_json = { version = "1", optional = true }
+ureq = { version = "2", optional = true }
+
+[[bin]]
+name = "lemmalog-mcp"
+required-features = ["mcp"]
+
+[[example]]
+name = "lmstudio"
+required-features = ["llm"]
+
+[[example]]
+name = "llm_rules"
+required-features = ["llm"]
+
+[[example]]
+name = "longmemeval"
+required-features = ["llm"]
+
+[features]
+# Real-model integration: OpenAI-compatible chat + embeddings (LM Studio,
+# llama.cpp server, OpenAI, etc.). Enable with --features llm.
+llm = ["dep:ureq", "dep:serde_json"]
+# MCP server binary (Model Context Protocol over stdio) for agent CLIs
+# (Claude Code, Kimi CLI, ...). Needs only serde_json.
+mcp = ["dep:serde_json"]

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "lemmalog": {
+      "command": "/absolute/path/to/lemmalog/target/release/lemmalog-mcp",
+      "env": {
+        "LEMMALOG_MCP_PATH": "/absolute/path/to/memory.snapshot"
+      }
+    }
+  }
+}

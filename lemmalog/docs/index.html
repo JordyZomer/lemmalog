@@ -1,0 +1,948 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lemmalog</title>
+<meta name="description" content="A Datalog engine for LLM agent memory — incremental, provenance-tracked, deterministic.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --paper: #FAFAFD;
+    --paper-raised: #FFFFFF;
+    --paper-glass: rgba(250, 250, 253, 0.78);
+    --panel: #191A2E;
+    --panel-edge: #31335A;
+    --panel-text: #DCDDF0;
+    --panel-dim: #8B8DAE;
+    --ink: #191A30;
+    --ink-soft: #4A4B66;
+    --ink-faint: #85869E;
+    --line: #E3E3EF;
+    --line-strong: #CFCFE2;
+    --indigo: #4B4EA8;
+    --indigo-ink: #4B4EA8;
+    --chip: #EFEFF7;
+    --amber: #B06A12;
+    --amber-bright: #C87A17;
+    --amber-glow: rgba(200, 122, 23, 0.16);
+    --indigo-glow: rgba(75, 78, 168, 0.14);
+    --good: #2E7D52;
+    --shadow-term: 0 24px 70px -28px rgba(25, 26, 48, 0.5), 0 0 0 1px rgba(25, 26, 48, 0.03);
+    --display: "Bricolage Grotesque", "Avenir Next", "Helvetica Neue", sans-serif;
+    --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --mono: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #101120;
+      --paper-raised: #171827;
+      --paper-glass: rgba(16, 17, 32, 0.72);
+      --panel: #0C0D1A;
+      --panel-edge: #2B2D50;
+      --panel-text: #DCDDF0;
+      --panel-dim: #797B9E;
+      --ink: #E9E9F5;
+      --ink-soft: #AFB0C9;
+      --ink-faint: #6E7090;
+      --line: #262740;
+      --line-strong: #34355A;
+      --indigo: #A2A5F0;
+      --indigo-ink: #8C8FE6;
+      --chip: #1E1F33;
+      --amber: #E3A44F;
+      --amber-bright: #EAA94E;
+      --amber-glow: rgba(234, 169, 78, 0.13);
+      --indigo-glow: rgba(140, 143, 230, 0.12);
+      --good: #5CB985;
+      --shadow-term: 0 24px 70px -24px rgba(0, 0, 0, 0.75), 0 0 60px -18px var(--indigo-glow);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #101120;
+    --paper-raised: #171827;
+    --paper-glass: rgba(16, 17, 32, 0.72);
+    --panel: #0C0D1A;
+    --panel-edge: #2B2D50;
+    --panel-text: #DCDDF0;
+    --panel-dim: #797B9E;
+    --ink: #E9E9F5;
+    --ink-soft: #AFB0C9;
+    --ink-faint: #6E7090;
+    --line: #262740;
+    --line-strong: #34355A;
+    --indigo: #A2A5F0;
+    --indigo-ink: #8C8FE6;
+    --chip: #1E1F33;
+    --amber: #E3A44F;
+    --amber-bright: #EAA94E;
+    --amber-glow: rgba(234, 169, 78, 0.13);
+    --indigo-glow: rgba(140, 143, 230, 0.12);
+    --good: #5CB985;
+    --shadow-term: 0 24px 70px -24px rgba(0, 0, 0, 0.75), 0 0 60px -18px var(--indigo-glow);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--indigo); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { color: var(--amber); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; border-radius: 4px; }
+  ::selection { background: var(--amber-glow); }
+
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+  .prose { max-width: 62ch; }
+
+  h1, h2, h3 { font-family: var(--display); text-wrap: balance; line-height: 1.12; }
+  h2 { font-size: clamp(27px, 3.4vw, 36px); font-weight: 700; letter-spacing: -0.015em; }
+  h3 { font-size: 17.5px; font-weight: 600; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--amber);
+  }
+
+  code, pre { font-family: var(--mono); }
+  code.inline {
+    font-size: 0.85em;
+    background: var(--chip);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1px 6px;
+    white-space: nowrap;
+  }
+
+  /* ---------- sticky nav ---------- */
+  header.site {
+    position: sticky; top: 0; z-index: 50;
+    background: var(--paper-glass);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav {
+    display: flex; align-items: center; gap: 26px;
+    height: 60px;
+    font-family: var(--mono); font-size: 13.5px;
+  }
+  .wordmark {
+    font-family: var(--display); font-weight: 700; font-size: 19px;
+    color: var(--ink); text-decoration: none; letter-spacing: -0.01em;
+    display: flex; align-items: center; gap: 9px;
+  }
+  .wordmark:hover { color: var(--ink); }
+  .wordmark .mark {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: linear-gradient(135deg, var(--indigo-ink), var(--amber-bright));
+    color: #fff; font-family: var(--mono); font-size: 12px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .wordmark .tail { color: var(--amber); }
+  .nav .links { display: flex; gap: 20px; margin-left: auto; align-items: center; }
+  .nav .links a { color: var(--ink-soft); text-decoration: none; }
+  .nav .links a:hover { color: var(--amber); }
+  @media (max-width: 720px) { .nav .links a.txt { display: none; } }
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; border-radius: 8px;
+    border: 1px solid var(--line); background: transparent;
+    color: var(--ink-soft); cursor: pointer;
+  }
+  .icon-btn:hover { color: var(--amber); border-color: var(--line-strong); }
+  .icon-btn svg { width: 17px; height: 17px; fill: currentColor; }
+  #theme-toggle .sun { display: none; }
+  :root[data-theme="dark"] #theme-toggle .sun { display: block; }
+  :root[data-theme="dark"] #theme-toggle .moon { display: none; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) #theme-toggle .sun { display: block; }
+    :root:not([data-theme="light"]) #theme-toggle .moon { display: none; }
+  }
+  .gh-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 13px; text-decoration: none; color: var(--ink) !important;
+    background: var(--paper-raised);
+  }
+  .gh-pill:hover { border-color: var(--amber); color: var(--amber) !important; }
+  .gh-pill svg { width: 15px; height: 15px; fill: currentColor; }
+
+  /* ---------- hero ---------- */
+  .hero {
+    position: relative;
+    padding: 84px 0 76px;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(560px 340px at 22% 8%, var(--indigo-glow), transparent 68%),
+      radial-gradient(640px 380px at 82% 30%, var(--amber-glow), transparent 70%);
+    pointer-events: none;
+  }
+  .hero::after {
+    content: "";
+    position: absolute; inset: 0;
+    background-image: radial-gradient(var(--line-strong) 1px, transparent 1px);
+    background-size: 26px 26px;
+    opacity: 0.34;
+    -webkit-mask-image: radial-gradient(ellipse 90% 75% at 50% 15%, black 30%, transparent 78%);
+    mask-image: radial-gradient(ellipse 90% 75% at 50% 15%, black 30%, transparent 78%);
+    pointer-events: none;
+  }
+  .hero .wrap { position: relative; }
+  .hero-grid {
+    display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    gap: 60px; align-items: center;
+  }
+  @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 44px; } }
+  .badge {
+    display: inline-flex; align-items: center; gap: 9px;
+    font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft);
+    border: 1px solid var(--line-strong); border-radius: 999px;
+    padding: 5px 14px 5px 7px;
+    background: var(--paper-raised);
+    margin-bottom: 22px;
+  }
+  .badge .tag {
+    background: var(--amber-glow); color: var(--amber);
+    border-radius: 999px; padding: 1px 9px; font-weight: 600; font-size: 11.5px;
+  }
+  .hero h1 {
+    font-size: clamp(42px, 6vw, 64px);
+    font-weight: 800;
+    letter-spacing: -0.025em;
+    margin: 0 0 20px;
+  }
+  .hero h1 em {
+    font-style: normal;
+    background: linear-gradient(100deg, var(--amber-bright), var(--indigo-ink));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+  }
+  .hero .lede { font-size: 19px; color: var(--ink-soft); max-width: 46ch; }
+  .hero-ctas { display: flex; gap: 13px; margin-top: 32px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    font-family: var(--mono); font-size: 14px; font-weight: 500;
+    text-decoration: none; border-radius: 9px; padding: 12px 22px;
+    display: inline-flex; align-items: center; gap: 9px;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
+  .btn svg { width: 15px; height: 15px; fill: currentColor; }
+  .btn-primary {
+    background: var(--ink); color: var(--paper); border: 1px solid var(--ink);
+    box-shadow: 0 8px 22px -10px rgba(25, 26, 48, 0.5);
+  }
+  .btn-primary:hover { background: var(--amber); border-color: var(--amber); color: #fff; transform: translateY(-1px); }
+  .btn-ghost { color: var(--ink); border: 1px solid var(--line-strong); background: var(--paper-raised); }
+  .btn-ghost:hover { border-color: var(--amber); color: var(--amber); transform: translateY(-1px); }
+
+  .install {
+    display: inline-flex; align-items: center; gap: 14px;
+    margin-top: 26px;
+    font-family: var(--mono); font-size: 13px;
+    background: var(--paper-raised);
+    border: 1px solid var(--line-strong); border-radius: 9px;
+    padding: 10px 10px 10px 16px;
+    max-width: 100%;
+  }
+  .install .cmd { color: var(--ink-soft); overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .install .cmd::-webkit-scrollbar { display: none; }
+  .install .cmd b { color: var(--amber); font-weight: 600; }
+  .install button {
+    flex: none;
+    font-family: var(--mono); font-size: 11.5px;
+    border: 1px solid var(--line); background: var(--chip); color: var(--ink-soft);
+    border-radius: 6px; padding: 5px 11px; cursor: pointer;
+  }
+  .install button:hover { color: var(--amber); border-color: var(--amber); }
+  .install button.ok { color: var(--good); border-color: var(--good); }
+
+  /* ---------- terminal / derivation panel ---------- */
+  .term-halo { position: relative; }
+  .term-halo::before {
+    content: "";
+    position: absolute; inset: -8% -6%;
+    background: radial-gradient(closest-side, var(--indigo-glow), transparent);
+    filter: blur(6px);
+    pointer-events: none;
+  }
+  .term {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 14px;
+    box-shadow: var(--shadow-term);
+    overflow: hidden;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--panel-edge);
+    font-family: var(--mono); font-size: 12px; color: var(--panel-dim);
+  }
+  .term-bar .dots { display: flex; gap: 6px; }
+  .term-bar .dots span { width: 10px; height: 10px; border-radius: 50%; }
+  .term-bar .dots span:nth-child(1) { background: #E8654F; }
+  .term-bar .dots span:nth-child(2) { background: #E5A93C; }
+  .term-bar .dots span:nth-child(3) { background: #58BB6C; }
+  .term-bar .title { margin-left: 4px; }
+  .term-bar button {
+    margin-left: auto; font-family: var(--mono); font-size: 11.5px;
+    background: none; border: 1px solid var(--panel-edge); color: var(--panel-dim);
+    border-radius: 6px; padding: 4px 11px; cursor: pointer;
+  }
+  .term-bar button:hover { color: var(--panel-text); border-color: var(--panel-dim); }
+  .term-body {
+    padding: 18px 20px 22px;
+    font-family: var(--mono); font-size: 13px; line-height: 1.85;
+    color: var(--panel-text);
+    overflow-x: auto;
+  }
+  .term-body .ln { white-space: pre; opacity: 0; transform: translateY(4px); }
+  .term-body.play .ln { animation: rise 0.4s ease-out forwards; }
+  .term-body .ln:nth-child(1)  { animation-delay: 0.2s; }
+  .term-body .ln:nth-child(2)  { animation-delay: 0.55s; }
+  .term-body .ln:nth-child(3)  { animation-delay: 0.9s; }
+  .term-body .ln:nth-child(4)  { animation-delay: 1.5s; }
+  .term-body .ln:nth-child(5)  { animation-delay: 2.2s; }
+  .term-body .ln:nth-child(6)  { animation-delay: 2.55s; }
+  .term-body .ln:nth-child(7)  { animation-delay: 2.9s; }
+  .term-body .ln:nth-child(8)  { animation-delay: 3.6s; }
+  .term-body .ln:nth-child(9)  { animation-delay: 4.0s; }
+  .term-body .ln:nth-child(10) { animation-delay: 4.25s; }
+  .term-body .ln:nth-child(11) { animation-delay: 4.5s; }
+  .term-body .ln:nth-child(12) { animation-delay: 4.75s; }
+  @keyframes rise { to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .term-body .ln { opacity: 1; transform: none; animation: none !important; }
+    .btn, .card { transition: none !important; }
+    html { scroll-behavior: auto; }
+  }
+  .t-dim    { color: var(--panel-dim); }
+  .t-assert { color: #7EB8E8; }
+  .t-rule   { color: #A9ACF0; }
+  .t-derive { color: #EAA94E; }
+  .t-good   { color: #6FCF97; }
+
+  .legend {
+    display: flex; gap: 20px; flex-wrap: wrap;
+    margin-top: 16px;
+    font-family: var(--mono); font-size: 12px; color: var(--ink-faint);
+  }
+  .legend b { font-weight: 600; }
+  .legend .k-assert { color: #4A82B8; }
+  .legend .k-rule { color: var(--indigo); }
+  .legend .k-derive { color: var(--amber); }
+  :root[data-theme="dark"] .legend .k-assert { color: #7EB8E8; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .legend .k-assert { color: #7EB8E8; }
+  }
+
+  /* ---------- sections ---------- */
+  section { padding: 84px 0; border-top: 1px solid var(--line); }
+  .section-head { margin-bottom: 42px; }
+  .section-head h2 { margin-top: 10px; }
+  .section-head p.sub { color: var(--ink-soft); margin-top: 14px; max-width: 62ch; }
+
+  /* thesis */
+  .thesis blockquote {
+    font-family: var(--display);
+    font-size: clamp(25px, 3.2vw, 33px);
+    font-weight: 700;
+    line-height: 1.28;
+    letter-spacing: -0.015em;
+    max-width: 24ch;
+    text-wrap: balance;
+  }
+  .thesis blockquote em {
+    font-style: normal;
+    background: linear-gradient(100deg, var(--amber-bright), var(--indigo-ink));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+  }
+  .thesis-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 56px; align-items: start; }
+  @media (max-width: 820px) { .thesis-grid { grid-template-columns: 1fr; gap: 28px; } }
+  .thesis p + p { margin-top: 1em; }
+  .thesis .body-col { color: var(--ink-soft); }
+
+  /* feature cards */
+  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+  @media (max-width: 900px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 620px) { .cards { grid-template-columns: 1fr; } }
+  .card {
+    position: relative;
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 24px 22px 22px;
+    display: flex; flex-direction: column; gap: 10px;
+    transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .card:hover {
+    transform: translateY(-2px);
+    border-color: var(--line-strong);
+    box-shadow: 0 14px 34px -20px rgba(25, 26, 48, 0.35), 0 0 0 3px var(--amber-glow);
+  }
+  .card .glyph {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: var(--chip); border: 1px solid var(--line);
+    color: var(--amber);
+    font-family: var(--mono); font-size: 15px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 4px;
+  }
+  .card p { font-size: 15px; color: var(--ink-soft); line-height: 1.6; }
+  .card code { font-size: 0.9em; }
+  .card .foot { margin-top: auto; padding-top: 12px; font-family: var(--mono); font-size: 12px; color: var(--ink-faint); }
+  .card .foot b { color: var(--amber); font-weight: 600; }
+
+  /* code blocks */
+  .codeblock {
+    background: var(--panel);
+    border: 1px solid var(--panel-edge);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 14px 40px -26px rgba(25, 26, 48, 0.5);
+  }
+  .codeblock .cb-head {
+    display: flex; align-items: center;
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--panel-dim); padding: 10px 18px; border-bottom: 1px solid var(--panel-edge);
+  }
+  .codeblock .cb-head button {
+    margin-left: auto; text-transform: none; letter-spacing: 0;
+    font-family: var(--mono); font-size: 11.5px;
+    background: none; border: 1px solid var(--panel-edge); color: var(--panel-dim);
+    border-radius: 6px; padding: 3px 10px; cursor: pointer;
+  }
+  .codeblock .cb-head button:hover { color: var(--panel-text); border-color: var(--panel-dim); }
+  .codeblock .cb-head button.ok { color: #6FCF97; border-color: #6FCF97; }
+  .codeblock pre {
+    padding: 18px 20px; overflow-x: auto;
+    font-size: 13px; line-height: 1.8; color: var(--panel-text);
+  }
+  .cmt { color: var(--panel-dim); }
+  .kw  { color: #A9ACF0; }
+  .str { color: #6FCF97; }
+  .acc { color: #EAA94E; }
+
+  .twocol { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 40px; align-items: start; }
+  @media (max-width: 880px) { .twocol { grid-template-columns: 1fr; } }
+  .side-notes { display: flex; flex-direction: column; gap: 16px; }
+  .side-notes .note {
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 20px;
+  }
+  .side-notes .note b { font-family: var(--display); font-weight: 600; font-size: 16px; display: block; margin-bottom: 4px; }
+  .side-notes .note p { font-size: 14.5px; color: var(--ink-soft); }
+
+  /* numbers strip */
+  .numbers {
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 14px;
+  }
+  @media (max-width: 960px) { .numbers { grid-template-columns: repeat(2, 1fr); } .numbers .num:last-child { grid-column: span 2; } }
+  .num {
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 24px 20px;
+  }
+  .num .val {
+    font-family: var(--display); font-size: 31px; font-weight: 800; letter-spacing: -0.02em;
+    color: var(--amber); font-variant-numeric: tabular-nums;
+  }
+  .num .lbl { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); margin-top: 8px; line-height: 1.55; }
+
+  /* benchmark */
+  .bench-table {
+    width: 100%; border-collapse: collapse;
+    font-family: var(--mono); font-size: 13.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .bench-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--paper-raised); }
+  .bench-table th, .bench-table td { text-align: left; padding: 13px 18px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .bench-table th { font-weight: 500; font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+  .bench-table tr:last-child td { border-bottom: none; }
+  .bench-table td.win { color: var(--amber); font-weight: 600; }
+  .bench-table tr.hl td { background: var(--amber-glow); }
+  .bench-table tr.total td { border-top: 1px solid var(--line-strong); color: var(--ink); }
+  .bench-note { margin-top: 22px; color: var(--ink-soft); max-width: 62ch; }
+  .bench-note b { color: var(--ink); }
+
+  /* quickstart */
+  .steps { display: grid; gap: 18px; }
+  .step {
+    display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 18px; align-items: start;
+    background: var(--paper-raised);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 24px;
+    counter-increment: step;
+  }
+  .steps { counter-reset: step; }
+  .step .n {
+    font-family: var(--display); font-weight: 700; font-size: 17px;
+    width: 36px; height: 36px; border-radius: 10px;
+    background: var(--amber-glow); color: var(--amber);
+    display: flex; align-items: center; justify-content: center;
+    margin-top: 2px;
+  }
+  .step h3 { margin-bottom: 8px; font-size: 18px; }
+  .step p { font-size: 15px; color: var(--ink-soft); margin-bottom: 12px; max-width: 62ch; }
+  .step .codeblock pre { padding: 13px 18px; }
+  .step .codeblock { box-shadow: none; }
+
+  /* footer */
+  footer.site {
+    border-top: 1px solid var(--line);
+    padding: 48px 0 60px;
+    color: var(--ink-faint);
+    font-family: var(--mono); font-size: 13px;
+  }
+  footer .cols { display: flex; gap: 40px; flex-wrap: wrap; justify-content: space-between; align-items: baseline; }
+  footer a { color: var(--ink-soft); }
+</style>
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap nav">
+    <a class="wordmark" href="#"><span class="mark">⊢</span>lemma<span class="tail">log</span></a>
+    <nav class="links" aria-label="Site">
+      <a class="txt" href="#engine">Engine</a>
+      <a class="txt" href="#rules">Rules</a>
+      <a class="txt" href="#benchmark">Benchmark</a>
+      <a class="txt" href="#quickstart">Quickstart</a>
+      <button class="icon-btn" id="theme-toggle" type="button" aria-label="Toggle theme">
+        <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0-14v2m0 14v2M3 12h2m14 0h2M5.6 5.6l1.4 1.4m9.9 9.9 1.4 1.4m0-12.7-1.4 1.4M7 17l-1.4 1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+      </button>
+      <a class="gh-pill" href="https://github.com/OWNER/lemmalog" aria-label="Lemmalog on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="badge"><span class="tag">Rust</span> stratified Datalog · bi-temporal · MCP server</span>
+        <h1>Facts go in. <em>Conclusions</em> stay true.</h1>
+        <p class="lede">
+          Lemmalog treats an agent's memory as a deductive database: the LLM asserts
+          facts at the boundary, and stratified Datalog rules derive everything
+          else — incrementally, with provenance, every turn.
+        </p>
+        <div class="hero-ctas">
+          <a class="btn btn-primary" href="#quickstart">Get started</a>
+          <a class="btn btn-ghost" href="https://github.com/OWNER/lemmalog">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+            Star on GitHub
+          </a>
+        </div>
+        <div class="install">
+          <span class="cmd" id="install-cmd"><b>$</b> claude mcp add lemmalog -- lemmalog-mcp</span>
+          <button type="button" id="copy-install" aria-label="Copy install command">copy</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="term-halo">
+        <div class="term">
+          <div class="term-bar">
+            <div class="dots" aria-hidden="true"><span></span><span></span><span></span></div>
+            <span class="title">lemmalog · repl</span>
+            <button type="button" id="replay">↻ replay</button>
+          </div>
+          <div class="term-body play" id="demo">
+<div class="ln"><span class="t-assert">+ alice --works_at--&gt; acme</span><span class="t-dim">        @t=100</span></div>
+<div class="ln"><span class="t-assert">+ alice --manager--&gt; bob</span><span class="t-dim">           @t=100</span></div>
+<div class="ln"><span class="t-rule">rule reports_to(X,Y) :- current(X,"manager",Y).</span></div>
+<div class="ln"><span class="t-dim">run · epoch 1 · 3 derived in 0.4 ms</span></div>
+<div class="ln"><span class="t-derive">⊢ current(alice, works_at, acme)</span></div>
+<div class="ln"><span class="t-derive">⊢ current(alice, manager, bob)</span></div>
+<div class="ln"><span class="t-derive">⊢ reports_to(alice, bob)</span></div>
+<div class="ln"><span class="t-dim">? why reports_to(alice, bob)</span></div>
+<div class="ln"><span class="t-derive">reports_to(alice, bob)</span></div>
+<div class="ln"><span class="t-dim">└─ </span><span class="t-rule">reports_to(X,Y) :- current(X,"manager",Y)</span></div>
+<div class="ln"><span class="t-dim">   └─ </span><span class="t-derive">current(alice, manager, bob)</span><span class="t-dim">  conf 0.90</span></div>
+<div class="ln"><span class="t-dim">      └─ </span><span class="t-assert">edge(alice, manager, bob, 100, ∞)</span><span class="t-good">  ← episode ep1</span></div>
+          </div>
+        </div>
+        </div>
+        <div class="legend" aria-hidden="true">
+          <span><b class="k-assert">+</b> asserted (LLM boundary)</span>
+          <span><b class="k-rule">:-</b> rule</span>
+          <span><b class="k-derive">⊢</b> derived (engine)</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <section class="thesis" id="thesis">
+    <div class="wrap thesis-grid">
+      <blockquote>An agent's memory should be a <em>deductive database</em>.</blockquote>
+      <div class="body-col prose">
+        <p>
+          Vector stores retrieve; they don't reason. When an agent needs to know
+          who Alice reports to <i>now</i>, whether two names are the same entity,
+          or what changed since last turn, re-reasoning it in-context is slow,
+          expensive, and non-deterministic.
+        </p>
+        <p>
+          Lemmalog moves that work out of the model. Base facts are asserted once
+          at the extraction boundary; rules derive temporal projections, closures,
+          canonicalizations, and aggregates. Every derived fact carries a proof
+          tree back to its source episodes, and each turn updates derived views
+          incrementally instead of recomputing them — or worse, re-prompting for them.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section id="engine">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">The engine</p>
+        <h2>What a memory actually needs</h2>
+      </div>
+      <div class="cards">
+        <article class="card">
+          <span class="glyph">Δ</span>
+          <h3>Incremental by construction</h3>
+          <p>
+            Seminaive evaluation with per-epoch deltas: a turn only derives what new
+            facts imply. Retraction is a scoped negative delta that rebuilds only
+            transitive dependents.
+          </p>
+          <p class="foot"><b>~50 ms</b> incremental turn vs <b>~17 s</b> cold fixpoint; idle turns cost µs.</p>
+        </article>
+        <article class="card">
+          <span class="glyph">⊢</span>
+          <h3>Provenance, not vibes</h3>
+          <p>
+            Confidence and provenance annotations on every fact.
+            <code class="inline">why()</code> returns a proof tree from any conclusion
+            down to the verbatim episodes that support it.
+          </p>
+          <p class="foot">Merge on re-derivation: <b>max conf, union provenance</b>.</p>
+        </article>
+        <article class="card">
+          <span class="glyph">≔</span>
+          <h3>Deterministic updates</h3>
+          <p>
+            A Mem0-style policy decides ADD / UPDATE / NOOP without a model call.
+            Exclusive predicates supersede by closing the old bi-temporal interval;
+            real conflicts escalate instead of silently merging.
+          </p>
+          <p class="foot">Updates, temporal projection, abstention: <b>rule-derived, exact</b>.</p>
+        </article>
+        <article class="card">
+          <span class="glyph">?</span>
+          <h3>Demand queries</h3>
+          <p>
+            <code class="inline">ask_deep()</code> answers point queries via magic-sets
+            rewriting — only the demand-relevant slice is derived, the base store
+            untouched.
+          </p>
+          <p class="foot">Point lookups in <b>~100 µs</b> at 4M facts.</p>
+        </article>
+        <article class="card">
+          <span class="glyph">~</span>
+          <h3>Hypotheticals</h3>
+          <p>
+            <code class="inline">what_if()</code> assumes temporary facts, runs to
+            fixpoint, answers a goal, and restores the store byte-identically —
+            lookahead without commitment.
+          </p>
+          <p class="foot">Relations, change log, epoch: <b>all restored</b>.</p>
+        </article>
+        <article class="card">
+          <span class="glyph">≡</span>
+          <h3>Entity resolution</h3>
+          <p>
+            The LLM proposes <code class="inline">alias</code> edges; Datalog derives
+            the closure and projects canonical views read-side only. Topology
+            violations become <code class="inline">alias_conflict</code> facts, never
+            silent merges.
+          </p>
+          <p class="foot">Confidence propagates: <b>weak merges look weak</b>.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="rules">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">The rule language</p>
+        <h2>Small enough to write by hand, or by model</h2>
+        <p class="sub">
+          Runtime-parsed, stratified Datalog with negation-as-absence, bi-temporal
+          columns, arithmetic in comparisons, and aggregation in rule heads. Rules
+          install as versioned batches an agent can revert; installing mid-session
+          backfills against existing facts.
+        </p>
+      </div>
+      <div class="twocol">
+        <div class="codeblock">
+          <div class="cb-head"><span>rules.dl</span><button type="button" class="copy-code">copy</button></div>
+          <pre><span class="cmt"># temporal projection: what's true now</span>
+current(E,R,O) <span class="kw">:-</span> edge(E,R,O,VF,VT,_),
+                  now(T), VF =&lt; T, T &lt; VT.
+
+<span class="cmt"># transitive closure</span>
+reports_to(X,Y) <span class="kw">:-</span> current(X,<span class="str">"manager"</span>,Y).
+<span class="acc">trans:</span> reports_to(X,Z) <span class="kw">:-</span> reports_to(X,Y),
+                           reports_to(Y,Z).
+
+<span class="cmt"># stratified negation</span>
+orphan(E) <span class="kw">:-</span> entity(E), <span class="acc">!</span>current(E,_,_).
+
+<span class="cmt"># aggregation in the head</span>
+kit_count(P, <span class="acc">count</span>(K)) <span class="kw">:-</span> bought(P, K).
+big_spender(P) <span class="kw">:-</span> kit_count(P, N), N &gt;= 3.
+
+<span class="cmt"># bounded relevance diffusion</span>
+near(S,E,1) <span class="kw">:-</span> mentions(S,E).
+<span class="acc">diffuse:</span> near(S,E2,D) <span class="kw">:-</span> near(S,E1,Dm),
+             Dm &lt; 3, D = Dm + 1, edge2(E1,E2).</pre>
+        </div>
+        <div class="side-notes">
+          <div class="note">
+            <b>Stratified, checked at install</b>
+            <p>
+              Recursion through negation is rejected up front; aggregation
+              dependencies stratify like negation edges, so folds complete before
+              any reader evaluates.
+            </p>
+          </div>
+          <div class="note">
+            <b>Loud failures, built for self-correction</b>
+            <p>
+              Unparseable goals and rejected batches return the offending input,
+              the precise reason, and a corrected example. Silent zero-fact
+              ingestion is impossible — every dropped line reports why.
+            </p>
+          </div>
+          <div class="note">
+            <b>Hybrid retrieval at the boundary</b>
+            <p>
+              <code class="inline">context_for_query</code> ranks facts with BM25 +
+              entity-graph boosting and assembles a budgeted context: distilled
+              facts on top, verbatim provenance episodes at the bottom.
+            </p>
+          </div>
+          <div class="note">
+            <b>Streaming change feed</b>
+            <p>
+              Every addition, retraction, and clear is epoch-stamped.
+              Checkpoint once, and an external projection — a vector index, a UI,
+              another agent — receives exactly the next turn's window.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="numbers">
+    <div class="wrap">
+      <div class="numbers">
+        <div class="num"><div class="val">92 µs</div><div class="lbl">ground point lookup over a 3.9M-fact relation (was 230 ms unindexed)</div></div>
+        <div class="num"><div class="val">1.5 ms</div><div class="lbl">maintenance per turn on a 1000-turn synthetic eval</div></div>
+        <div class="num"><div class="val">12.8×</div><div class="lbl">context-token saving vs raw transcript on the synthetic eval</div></div>
+        <div class="num"><div class="val">450</div><div class="lbl">random programs differentially tested against a brute-force oracle</div></div>
+        <div class="num"><div class="val">100%</div><div class="lbl">synthetic long-horizon accuracy: updates, multi-hop, abstention</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="benchmark">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Measured, not marketed</p>
+        <h2>LongMemEval: memory now leads the transcript</h2>
+        <p class="sub">
+          End-to-end on the oracle split: live LLM extraction → update policy →
+          memory → hybrid-retrieval context (<code class="inline">context_for_query</code>,
+          1200–1800 token budget) → answers, against the same model reading the raw
+          transcript. SQuAD-style F1, Claude Opus 4.8, 5 instances per type.
+        </p>
+      </div>
+      <div class="bench-wrap">
+        <table class="bench-table">
+          <thead>
+            <tr><th>Question type</th><th>Memory F1</th><th>Transcript F1</th><th>Δ</th></tr>
+          </thead>
+          <tbody>
+            <tr class="hl"><td>knowledge-update</td><td class="win">0.80</td><td>0.57</td><td class="win">+0.23</td></tr>
+            <tr class="hl"><td>temporal-reasoning *</td><td class="win">0.73</td><td>0.24</td><td class="win">+0.49</td></tr>
+            <tr><td>single-session-user</td><td class="win">~1.00</td><td>~0.80</td><td class="win">+0.20</td></tr>
+            <tr><td>single-session-assistant</td><td>0.70</td><td>0.74</td><td>−0.04</td></tr>
+            <tr><td>multi-session</td><td>0.32</td><td>0.33</td><td>−0.01</td></tr>
+            <tr><td>single-session-preference</td><td>0.11</td><td>0.11</td><td>0.00</td></tr>
+            <tr class="total"><td>overall</td><td class="win">~0.60</td><td>~0.50</td><td class="win">at 1.3–2.7× smaller contexts</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="bench-note">
+        The earlier dump-everything configuration <i>tied</i> the raw transcript
+        (0.48 vs 0.51) — the fix wasn't better extraction but better selection.
+        With retrieval, <b>every category is at parity or ahead</b>: supersession makes
+        knowledge updates deterministic (the transcript answers stale values or
+        hedges), and question-keyed dated-fact history fixed the one temporal
+        regression (* measured on that category's focused re-run). Assembled from
+        runs covering 28 of 30 instances; tighter contexts trigger the recall
+        fallback more often, so precision trades against latency, not accuracy.
+      </p>
+    </div>
+  </section>
+
+  <section id="quickstart">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Quickstart</p>
+        <h2>Your agent's working memory, over MCP</h2>
+        <p class="sub">
+          The intended division of labor: the host model reads the conversation and
+          asserts triples; Lemmalog derives closures, temporal views, and
+          canonicalizations deterministically. Twelve tools over stdio JSON-RPC,
+          for Claude Code, Kimi CLI, or any MCP host.
+        </p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="n">1</div>
+          <div>
+            <h3>Build the server</h3>
+            <div class="codeblock"><div class="cb-head"><span>shell</span><button type="button" class="copy-code">copy</button></div><pre>cargo build --release --features mcp</pre></div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="n">2</div>
+          <div>
+            <h3>Register it</h3>
+            <p>Set <code class="inline">LEMMALOG_MCP_PATH</code> to persist memory across sessions.</p>
+            <div class="codeblock"><div class="cb-head"><span>shell</span><button type="button" class="copy-code">copy</button></div><pre>claude mcp add lemmalog --env LEMMALOG_MCP_PATH=~/.lemmalog.snapshot -- \
+  /path/to/lemmalog/target/release/lemmalog-mcp</pre></div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="n">3</div>
+          <div>
+            <h3>Assert, derive, ask, prove</h3>
+            <div class="codeblock"><div class="cb-head"><span>session</span></div><pre><span class="kw">lemmalog_observe</span>       {<span class="str">"facts"</span>: <span class="str">"Alice --works_at--&gt; Acme\nAlice --manager--&gt; Bob"</span>}
+<span class="kw">lemmalog_install_rules</span> {<span class="str">"rules"</span>: <span class="str">"reports_to(X,Y) :- current(X,\"manager\",Y)."</span>}
+<span class="kw">lemmalog_query</span>         {<span class="str">"goal"</span>: <span class="str">"reports_to(\"Alice\", Y)"</span>}   <span class="cmt">→ Y=Bob</span>
+<span class="kw">lemmalog_why</span>           {<span class="str">"fact"</span>: <span class="str">"reports_to(Alice, Bob)"</span>}     <span class="cmt">→ proof tree</span>
+<span class="kw">lemmalog_what_if</span>       {<span class="str">"facts"</span>: <span class="str">"Dana --manager--&gt; Alice"</span>, <span class="str">"goal"</span>: <span class="str">"..."</span>}</pre></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="correctness">
+    <div class="wrap thesis-grid">
+      <div>
+        <p class="eyebrow">Correctness</p>
+        <h2 style="margin-top:10px;">Tested like an engine, because it is one</h2>
+      </div>
+      <div class="body-col prose" style="color: var(--ink-soft);">
+        <p>
+          450 randomly generated stratified programs are checked against a
+          brute-force fixpoint oracle over the ground domain — the classic
+          validation technique for Datalog engines — plus incremental-vs-single-shot
+          equivalence and a 2,000-case parser fuzz.
+        </p>
+        <p style="margin-top:1em;">
+          If the engine derives it, an independent oracle agrees with it — and the
+          few times they disagreed during development, the engine was fixed and the
+          case became a regression test.
+        </p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site">
+  <div class="wrap cols">
+    <span>lemma<span style="color: var(--amber);">log</span> — facts in, conclusions stay true.</span>
+    <span>
+      <a href="https://github.com/OWNER/lemmalog">GitHub</a>
+      &nbsp;·&nbsp; <a href="https://github.com/OWNER/lemmalog#readme">README</a>
+      &nbsp;·&nbsp; MIT
+    </span>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    // theme toggle: cycles explicit light/dark, seeded from the current effective theme
+    var root = document.documentElement;
+    var toggle = document.getElementById('theme-toggle');
+    try {
+      var saved = localStorage.getItem('lemmalog-theme');
+      if (saved === 'light' || saved === 'dark') root.setAttribute('data-theme', saved);
+    } catch (e) {}
+    if (toggle) toggle.addEventListener('click', function () {
+      var dark = root.getAttribute('data-theme') === 'dark' ||
+        (!root.hasAttribute('data-theme') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      var next = dark ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('lemmalog-theme', next); } catch (e) {}
+    });
+
+    // replay the derivation
+    var demo = document.getElementById('demo');
+    var replay = document.getElementById('replay');
+    if (replay && demo) replay.addEventListener('click', function () {
+      demo.classList.remove('play');
+      void demo.offsetWidth;
+      demo.classList.add('play');
+    });
+
+    // copy buttons
+    function flash(btn) {
+      var old = btn.textContent;
+      btn.textContent = 'copied';
+      btn.classList.add('ok');
+      setTimeout(function () { btn.textContent = old; btn.classList.remove('ok'); }, 1400);
+    }
+    var copyInstall = document.getElementById('copy-install');
+    if (copyInstall) copyInstall.addEventListener('click', function () {
+      var text = document.getElementById('install-cmd').textContent.replace(/^\$\s*/, '');
+      navigator.clipboard.writeText(text).then(function () { flash(copyInstall); });
+    });
+    document.querySelectorAll('.copy-code').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var pre = btn.closest('.codeblock').querySelector('pre');
+        navigator.clipboard.writeText(pre.textContent).then(function () { flash(btn); });
+      });
+    });
+  })();
+</script>
+
+</body>
+</html>

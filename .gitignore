@@ -1,0 +1,17 @@
+# Rust
+target/
+
+# benchmark dataset (15 MB; download separately, see lemmalog/README.md)
+lemmalog/data/
+
+# local snapshots / agent memory dumps (machine state, not source)
+*.clog
+*.snapshot
+.mcp.json
+
+# extraction caches and context dumps from benchmark iteration
+lme-cache/
+lme-ctx/
+
+# macOS
+.DS_Store
