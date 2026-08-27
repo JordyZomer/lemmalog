@@ -1,4 +1,4 @@
-# brainlog
+# lemmalog
 
 **An agent's memory should be a deductive database.**
 
