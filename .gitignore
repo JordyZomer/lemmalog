@@ -1,8 +1,8 @@
 # Rust
 target/
 
-# benchmark dataset (15 MB; download separately, see lemmalog/README.md)
-lemmalog/data/
+# benchmark dataset (15 MB; download separately, see README.md)
+data/
 
 # local snapshots / agent memory dumps (machine state, not source)
 *.clog
