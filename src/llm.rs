@@ -76,10 +76,23 @@ impl OpenAiClient {
                         .set("x-api-key", key)
                         .set("anthropic-version", "2023-06-01");
                 }
-                match req.send_string(body) {
+                let first = req.clone();
+                match first.send_string(body) {
                     Ok(resp) => resp
                         .into_string()
                         .map_err(|e| format!("read: {e}")),
+                    Err(ureq::Error::Status(429, resp)) => {
+                        // rate limited: back off, then one retry on the
+                        // saved request
+                        let _ = resp.into_string();
+                        let wait = std::time::Duration::from_secs(20);
+                        eprintln!("lemmalog: rate limited (429), backing off {wait:?}");
+                        std::thread::sleep(wait);
+                        req.send_string(body)
+                            .map_err(|e| format!("http retry: {e}"))?
+                            .into_string()
+                            .map_err(|e| format!("read: {e}"))
+                    }
                     Err(ureq::Error::Status(code, resp)) => {
                         let body = resp
                             .into_string()
@@ -227,7 +240,14 @@ impl Extractor for FileCachedExtractor {
         if let Ok(cached) = std::fs::read_to_string(&path) {
             return crate::agent::parse_protocol_strict(&cached, 0.9);
         }
+        let failures_before = self.inner.stats().1;
         let facts = self.inner.extract(episode);
+        let failed = self.inner.stats().1 > failures_before;
+        // never write-through on failure: an empty cache file poisons every
+        // future run (the mass-rate-limit incident wrote 2,739 empty files)
+        if failed {
+            return facts;
+        }
         let _ = std::fs::create_dir_all(&self.dir);
         let body: String = facts
             .iter()

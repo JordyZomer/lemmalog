@@ -18,6 +18,30 @@ pub fn tokenize_pub(s: &str) -> Vec<String> {
     tokenize(s)
 }
 
+/// Light stemming so question vocabulary meets fact vocabulary:
+/// plurals fold ("airlines" -> "airline") and a small irregular-form map
+/// covers the verbs user-life questions use ("flew"/"flying" -> "fly").
+/// Applied identically to queries and indexed text.
+fn norm_token(t: &str) -> String {
+    const IRREGULAR: [(&str, &str); 18] = [
+        ("flew", "fly"), ("flying", "fly"), ("flown", "fly"),
+        ("took", "take"), ("taking", "take"), ("taken", "take"),
+        ("went", "go"), ("going", "go"), ("gone", "go"),
+        ("bought", "buy"), ("buying", "buy"),
+        ("got", "get"), ("getting", "get"),
+        ("ate", "eat"), ("ran", "run"), ("stayed", "stay"),
+        ("moved", "move"), ("watched", "watch"),
+    ];
+    if let Some(base) = IRREGULAR.iter().find(|(form, _)| *form == t) {
+        return base.1.to_string();
+    }
+    // plural fold: airlines -> airline (keep -ss words like "class")
+    if t.len() > 4 && t.ends_with('s') && !t.ends_with("ss") {
+        return t[..t.len() - 1].to_string();
+    }
+    t.to_string()
+}
+
 fn tokenize(s: &str) -> Vec<String> {
     // Common function words: no topical signal, but they match everywhere
     // once relation names split on `_` (`works_at` -> `works`, `at`),
@@ -30,7 +54,7 @@ fn tokenize(s: &str) -> Vec<String> {
     s.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| t.len() > 1 && !STOP.contains(t))
-        .map(|t| t.to_string())
+        .map(|t| norm_token(t))
         .collect()
 }
 

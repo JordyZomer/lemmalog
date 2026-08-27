@@ -99,14 +99,15 @@ fn context_for_query_end_to_end() {
     let ctx = m.context_for_query("who manages alice at work", 300);
     assert!(ctx.contains("alice"), "{ctx}");
     assert!(ctx.contains("manager"), "{ctx}");
-    // the FACTS section excludes the irrelevant entity (verbatim episodes
-    // may still contain it — provenance is source text)
+    // entity-boosted facts rank first: alice's facts above carol's (which
+    // only weakly matches via the stemmed "work" -> "works_at" token)
     let facts_section = ctx
         .split("== source episodes")
         .next()
         .unwrap_or("");
-    assert!(
-        !facts_section.contains("carol"),
-        "irrelevant entity excluded from facts: {facts_section}"
-    );
+    let first_alice = facts_section.find("alice").unwrap();
+    let first_carol = facts_section.find("carol");
+    if let Some(c) = first_carol {
+        assert!(first_alice < c, "alice facts rank above carol's: {facts_section}");
+    }
 }

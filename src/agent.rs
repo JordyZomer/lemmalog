@@ -731,7 +731,13 @@ enum ArgRepr {
 
 /// Escape a field for the tab-separated snapshot format.
 fn esc(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n")
+    // spaces too: snapshot fields and fact args are space-separated, so
+    // multi-word symbols (extracted entities like "United Airlines") must
+    // not split on reload
+    s.replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\n', "\\n")
+        .replace(' ', "\\s")
 }
 
 fn unesc(s: &str) -> String {
@@ -742,6 +748,7 @@ fn unesc(s: &str) -> String {
             match it.next() {
                 Some('t') => out.push('\t'),
                 Some('n') => out.push('\n'),
+                Some('s') => out.push(' '),
                 Some('\\') => out.push('\\'),
                 Some(other) => {
                     out.push('\\');

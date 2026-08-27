@@ -13,6 +13,10 @@ ureq = { version = "2", optional = true }
 name = "lemmalog-mcp"
 required-features = ["mcp"]
 
+[[bin]]
+name = "lemmalog-bench"
+required-features = ["llm"]
+
 [[example]]
 name = "lmstudio"
 required-features = ["llm"]
