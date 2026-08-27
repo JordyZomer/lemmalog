@@ -99,11 +99,7 @@ mkdir -p ~/.claude/skills && cp -r skills/lemmalog ~/.claude/skills/
 # (e.g. ~/.kimi/skills/lemmalog/ — see its skills docs)
 ```
 
-Task prompts then stay domain-specific and reference the skill in one line
-(see `zeroday-prompt-with-mcp.md` for a worked
-example: the audit prompt contributes the security domain — surfaces,
-idioms, threat model, the `family`/`tried` registry — and the skill carries
-the memory methodology).
+Task prompts then stay domain-specific and reference the skill in one line.
 
 ## MCP server: use from Claude Code or Kimi CLI
 
