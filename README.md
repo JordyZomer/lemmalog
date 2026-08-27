@@ -10,7 +10,7 @@ motivate it.
 |---|---|
 | [`lemmalog/`](lemmalog/) | The Rust crate: engine, agent layer, MCP server, REPL, skill, benchmarks |
 | [`datalog-context-engine-design.md`](datalog-context-engine-design.md) | The original design document, with an honest status log of what shipped |
-| [`zeroday-prompt-with-mcp.md`](zeroday-prompt-with-mcp.md) | A worked example: a multi-agent security-audit prompt that uses the lemmalog skill + MCP as its shared brain |
+
 
 ## The idea
 
