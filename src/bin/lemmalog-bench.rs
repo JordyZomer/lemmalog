@@ -40,6 +40,14 @@ fn main() {
             let ctx = context(snap, question);
             print!("{ctx}");
         }
+        Some("recall") => {
+            let (snap, question) = (
+                args.get(2).expect("usage: recall <snapshot> <question>"),
+                args.get(3).expect("usage: recall <snapshot> <question>"),
+            );
+            let recalled = recall(snap, question);
+            print!("{recalled}");
+        }
         _ => {
             eprintln!("usage: lemmalog-bench ingest|context ...");
             std::process::exit(2);
@@ -172,9 +180,94 @@ fn ingest(conv_path: &str, snap: &str) {
     );
 }
 
+/// Counting-shaped questions get a different context: count aggregates
+/// (via the aggregation engine) plus more raw episode text — gpt-4.1
+/// counts from prose better than our fact count when extraction misses
+/// enumerable items, so give it both.
+fn is_counting_question(q: &str) -> bool {
+    let l = q.to_lowercase();
+    l.contains("how many")
+        || l.contains("how much")
+        || l.contains("total ")
+        || l.contains("in total")
+        || l.contains("number of")
+}
+
+fn counting_context(m: &mut AgentMemory<MockExtractor>, question: &str) -> String {
+    // dynamic count rules per distinct relation in current(S, R, O):
+    // cnt_<rel>(S, count(O))
+    let mut rels: Vec<String> = Vec::new();
+    for key in m.engine.relation_keys("current") {
+        if key.len() == 3 {
+            let r = m.engine.interner.display(&key[1]).to_string();
+            if !rels.contains(&r) {
+                rels.push(r);
+            }
+        }
+    }
+    let mut rules = String::new();
+    for r in &rels {
+        let safe = r.replace('/', "_");
+        rules.push_str(&format!(
+            "cnt_{safe}(S, count(O)) :- current(S, \"{r}\", O).\n"
+        ));
+    }
+    if !rules.is_empty() {
+        let _ = m.engine.install_program(&rules);
+        let now = m.engine.now;
+        let _ = m.maintain(now);
+    }
+
+    // assemble: counts section first (small), then facts, then generous
+    // episode text from BM25 over the question
+    let mut out = String::from("== counts (derived aggregates) ==\n");
+    let mut count_lines = 0;
+    let user_sym = m.engine.sym("the_user");
+    let qtokens: std::collections::BTreeSet<String> =
+        lemmalog::retrieval::tokenize_pub(question)
+            .into_iter()
+            .filter(|t| t.len() >= 3)
+            .collect();
+    let preds: Vec<String> = m
+        .engine
+        .relations
+        .keys()
+        .filter(|p| p.starts_with("cnt_"))
+        .cloned()
+        .collect();
+    for pred in &preds {
+        for key in m.engine.relation_keys(pred) {
+            if key.len() == 2 && key[0] == user_sym {
+                // relevance filter: the count line must share a token with
+                // the question (relation name or the counted object)
+                let line = m.engine.render_fact(pred, &key);
+                let shares = lemmalog::retrieval::tokenize_pub(&line)
+                    .into_iter()
+                    .any(|t| t.len() >= 3 && qtokens.contains(&t));
+                if !shares {
+                    continue;
+                }
+                out.push_str(&format!("{line}\n"));
+                count_lines += 1;
+            }
+        }
+    }
+    if count_lines == 0 {
+        out.clear(); // no counts: fall through to normal context below
+    }
+    let base = m.context_for_query(question, 2400);
+    if count_lines == 0 {
+        return base;
+    }
+    format!("{out}\n{base}")
+}
+
 fn context(snap: &str, question: &str) -> String {
     let mut m = AgentMemory::load(MockExtractor::new(0.9), snap).expect("load snapshot");
     let _ = m.maintain(m.engine.now);
+    if is_counting_question(question) {
+        return counting_context(&mut m, question);
+    }
     let budget: usize = std::env::var("LEMMALOG_CONTEXT_BUDGET")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -227,4 +320,46 @@ fn context(snap: &str, question: &str) -> String {
             "{base}\nEDGE HISTORY: subject --relation--> object, valid_from .. valid_to (asserted at):\n{hist}"
         )
     }
+}
+
+/// Recall fallback: when the memory lacks the answer, run ONE targeted
+/// extraction pass over the BM25-top episodes WITH the question in the
+/// prompt — the question tells the extractor exactly what to hunt for.
+/// Returns the extracted triples as context lines (empty if nothing found).
+fn recall(snap: &str, question: &str) -> String {
+    let m = AgentMemory::load(MockExtractor::new(0.9), snap).expect("load snapshot");
+    // rank episodes by BM25 over the question, take the top 5
+    let r = lemmalog::retrieval::Retrieval::build(&m.engine, m.episodes());
+    let sel = r.select(question, 1200);
+    let mut episodes_text = String::new();
+    for &i in &sel.episodes {
+        let ep = &m.episodes()[i];
+        episodes_text.push_str(&format!("[{}] {}\n", ep.id, ep.text));
+    }
+    if episodes_text.is_empty() {
+        return String::new();
+    }
+    // one targeted extraction call (Claude), strict-parsed
+    let base = client();
+    let prompt = format!(
+        "The user asks: {question}\n\nBelow are the most relevant source \
+episodes. Extract ONLY the facts that answer this question, in the form \
+S --rel--> O (confidence omitted). If the episodes do not contain the \
+answer, reply with the single word NONE.\n\n{episodes_text}\n\nTriples only:"
+    );
+    let Ok(response) = base.chat(
+        "You extract factual triples precisely. Output only triple lines \
+or NONE.",
+        &prompt,
+    ) else {
+        return String::new();
+    };
+    if response.trim().eq_ignore_ascii_case("none") {
+        return String::new();
+    }
+    let facts = lemmalog::agent::parse_protocol_strict(&response, 0.8);
+    facts
+        .iter()
+        .map(|f| format!("{} --{}--> {}\n", f.subj, f.pred, f.obj))
+        .collect()
 }
