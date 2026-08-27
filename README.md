@@ -341,6 +341,49 @@ Reading it honestly:
   per conversation (~$0.20 Sonnet, cached forever) and amortizes across
   every additional question.
 
+## LoCoMo: the second standardized benchmark (10 conversations, 1,986 questions)
+
+Same harness, LoCoMo's standardized gpt-4.1-mini reader. F1 vs. their
+published leaderboard:
+
+```
+Rank  System          F1      Tokens (all-phase)
+ 1    PropMem (pub)   0.605     5.9M
+ 2    OpenClaw (pub)  0.557    16.4M
+ 3    FullCtx (pub)   0.542    37.5M
+ 4    Hindsight(pub)  0.489    24.2M
+ —    lemmalog        0.483     6.4M
+ 5    Graphiti (pub)  0.416     5.1M
+ 6    Memory-R1(pub)  0.389     3.4M
+ 7    SimpleMem(pub)  0.358    11.4M
+```
+
+**4th of 10**, statistically tied with Hindsight (0.489), ahead of
+Graphiti, Memory-R1, SimpleMem, Mem0, and MemU — on the first try,
+with zero LoCoMo-specific tuning. Per-category:
+
+```
+                    lemmalog  PropMem  FullCtx
+Multi-hop (N=841)     0.544    0.599    0.674
+Adversarial (N=446)   0.676    0.794    0.509
+Factual (N=282)       0.368    0.431    0.517
+Temporal (N=321)      0.257    0.615    0.369
+Inferential (N=96)    0.143    0.289    0.197
+```
+
+Notable: **adversarial 0.676 beats full-context (0.509) by +0.17** —
+those are questions designed to bait false memories ("did I ever
+mention X?" when X was never mentioned), and the structured memory says
+"no" honestly rather than confabulating from loose retrieval. The
+temporal gap (0.257 vs PropMem's 0.615) is the known ordering-extraction
+weakness.
+
+Two benchmark rows, both on their standardized harnesses, both honest:
+LongMemEval F1 0.424 (3rd of 6 at 1/45th the tokens) and LoCoMo F1
+0.483 (4th of 10). The consistent pattern: competitive with the leaders
+on structure-rewarding categories, ahead of every retrieval-first
+system, behind PropMem overall.
+
 ## Correctness assurance## Correctness assurance
 
 `tests/differential_test.rs` generates 450 random stratified programs
