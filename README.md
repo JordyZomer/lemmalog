@@ -384,6 +384,45 @@ LongMemEval F1 0.424 (3rd of 6 at 1/45th the tokens) and LoCoMo F1
 on structure-rewarding categories, ahead of every retrieval-first
 system, behind PropMem overall.
 
+## Token economics (the honest numbers)
+
+**Per-question context** (what actually hits the reader's prompt):
+
+```
+LongMemEval:  ~2,300 tokens/question vs ~104,000 for full context = 45x
+LoCoMo:       ~3,200 tokens/question vs ~18,900 for full context =  6x
+```
+
+**All-in cost** (reader + one-time extraction, benchmark accounting):
+
+The benchmarks are actually the *worst case* for amortization —
+LongMemEval gives each question a fresh conversation (extraction never
+reuses). LoCoMo (10 conversations, ~200 questions each) shows the real
+curve:
+
+```
+questions asked     all-in (ours)    all-in (fullctx)    ratio
+        ~100            ~1.5M              ~1.9M          1x (crossover)
+        200             ~1.8M              ~3.8M          2x
+      1,986             ~7.6M             ~37.5M          5x
+```
+
+**Real agent scenario** (one growing conversation, queried every turn):
+
+```
+after  50 turns:  fullctx = 100,000 tok/q | lemmalog = 2,500 tok/q (40x)
+after 100 turns:  fullctx = 200,000 tok/q | lemmalog = 2,500 tok/q (80x)
+                  (fullctx OVERFLOWS a 128K window here)
+after 500 turns:  fullctx =   1.0M  tok/q | lemmalog = 2,500 tok/q (400x)
+```
+
+Lemmalog's per-question cost is **constant** (~2.5K tokens) regardless
+of history length; full-context grows linearly and overflows. The
+extraction cost is proportional to *new input* (you only pay for what
+you read once), not to *queries*. For a long-running agent, the
+cumulative ratio reaches 150x by turn 500 — and the agent never runs
+out of window.
+
 ## Correctness assurance## Correctness assurance
 
 `tests/differential_test.rs` generates 450 random stratified programs
