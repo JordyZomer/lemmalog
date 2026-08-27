@@ -184,6 +184,10 @@ single-session-preference 0.06          0.13       0/5 vs 0/5
 OVERALL               30    0.48          0.51      11/30 vs 10/30
 ```
 
+(One scored run — see the measurement caveat in the retrieval-results
+section before quoting these numbers comparatively; run-to-run variance
+without temperature control is ~±0.3 F1 per type at n=5.)
+
 Per-fix effects, measured on the failing instances before the full run:
 
 - **Role-aware pronoun resolution** (the assistant's "I" was being
@@ -238,36 +242,47 @@ over `lemmalog_dump` for grounded answering.
 ## Retrieval results (live, same 30-instance protocol)
 
 Memory-mode context switched from dump-everything to
-`context_for_query` (1200-token budget). Assembled from three focused
-runs covering 28 of the 30 instances (Claude Opus 4.8):
+`context_for_query` (1800-token budget, budgeted dated-history append).
+Assembled from focused runs (Claude Opus 4.8):
 
 ```
-                         memory F1   transcript F1    delta vs dump-context
-knowledge-update      5/5  0.80          0.57          +0.20 (best ever)
-single-session-user   5/5  ~1.00         ~0.80         +0.20
-single-session-assistant  0.70          0.74          +0.06
-multi-session         5/5  0.32          0.33          +0.11
-single-session-preference 0.11          0.11          +0.05 (parity)
-temporal-reasoning    5/5  0.22          0.66          -0.35 (regression)
+                         memory F1   transcript F1
+knowledge-update      5/5  0.80          0.57
+single-session-user   5/5  ~1.00         ~0.80
+single-session-assistant  0.70          0.74
+multi-session         5/5  0.32          0.33
+single-session-preference 0.11          0.11
+temporal-reasoning    5/5  high variance (see below)
 ```
 
-- **Knowledge-update is now decisively ahead**: 0.80 vs 0.57, including
-  the indirect-mention 5K question answered for the first time in six
-  runs ("25:50", via retrieval or the recall fallback) and the previous-PB
-  question at 1.00 while the transcript hedges both values.
-- **The temporal regression was diagnosed and fixed in one focused
-  run** (~$2): ordering questions need BOTH endpoints' dated facts, so
-  the runner now keys its dated-history append off the question text as
-  well as the selection (budget 1200 -> 1800). Result: memory F1 0.73,
-  EM 2/4 vs baseline 0.24, EM 0/4 — bike-vs-car 0.22 -> 1.00 (beating
-  the baseline's 0.20), device-ordering 0.00 -> 1.00 (the baseline
-  answered wrong). With the fix, every category is at parity or ahead:
-  assembled overall ~0.6 memory vs ~0.5 transcript — the first
-  configuration where the memory leads overall, at 1.3-2.7x smaller
-  contexts.
-- **Cost note**: tighter contexts trigger the recall fallback more often
-  (+2 model calls per "unknown"), roughly doubling wall time on those
-  instances — precision vs latency is now an explicit trade-off.
+**Measurement caveat, learned the hard way**: opus-4-8 rejects the
+`temperature` parameter, so answers sample at the API default — a single
+scored run at n=5/type has ~±0.3 F1 noise per category (the bike-vs-car
+question flipped 1.00 → 0.00 across two same-configuration runs). Type
+comparisons below ~0.3 are not evidence. The findings that held across
+every configuration:
+
+- **Knowledge-update is consistently ahead**: 0.80 vs 0.57 in the
+  retrieval configuration, including the indirect-mention 5K question
+  answered for the first time in six runs; the transcript baseline
+  answers with stale values or hedges both.
+- **User-stated discrete facts are near-perfect** for memory across all
+  configurations, including instances the transcript mode misses.
+- **Token economics hold**: 1.3-6x smaller contexts, precision-vs-latency
+  is an explicit dial (tighter contexts trigger more recall fallbacks).
+- **Temporal-reasoning is unresolved, with the failure fully attributed**:
+  ordering questions need both endpoints' dated facts; when extraction
+  captures both (verified by grepping the extraction cache), retrieval
+  delivers them and the answer is exact — the residual failures are
+  extraction recall (events never extracted as facts) plus answer-sampling
+  variance. Fixing measurement needs n≥10 or repeated runs, which the
+  extraction cache makes cheap (answers-only cost).
+
+**Reproduction is nearly free after the first run**: `LEMMALOG_CACHE_DIR`
+persists extraction results by episode hash (reruns pay only for
+answering), `LEMMALOG_DUMP_CTX` + `LEMMALOG_NO_ANSWER=1` assemble and
+dump contexts with zero API calls — context-assembly changes can be
+validated offline by diffing the dumped files.
 
 ## Correctness assurance
 
