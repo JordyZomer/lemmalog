@@ -5,7 +5,10 @@ A Datalog engine for LLM agent memory. This repo contains the engine
 ([`datalog-context-engine-design.md`](datalog-context-engine-design.md),
 with an honest status log of what shipped).
 
-The thesis: **an agent's memory should be a deductive database.** Base facts
+The thesis: **an agent's memory should be a deductive database** — the
+agent builds a *verifiable model of what it knows* and mechanically
+reasons over how that knowledge changes, rather than "remembering
+better" than a vector store. Base facts
 are asserted at the ingestion boundary (LLM extraction); rules derive
 closures, temporal projections, contradiction candidates, and relevance
 diffusion; every fact carries provenance back to its source episodes; and
@@ -482,6 +485,9 @@ cargo test                         # 44 tests: engine (20) + agg (6) + agent (10
                                    # eval (2) + session (1)
 cargo run --example agent_memory   # engine-level demo
 cargo run --example agent_session  # full agent loop incl. ask_deep + news
+cargo run --release --example investigation # the thesis in one run: derived
+                                   # beliefs, why() proofs, retraction
+                                   # repairs the closure
 cargo run --release --example graph_queries # cyclic joins + closure stress
 cargo run --release --example perf        # chain closure: fixpoint vs incremental
                                    # vs idle turn timings
