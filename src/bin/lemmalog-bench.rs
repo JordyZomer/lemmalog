@@ -70,10 +70,15 @@ fn main() {
 /// monotonic minutes (matches the runner).
 fn parse_date(s: &str) -> i64 {
     let parts: Vec<&str> = s.split_whitespace().collect();
-    // normalized MemEval shape: date first, time at index 3 (or absent)
+    // normalized MemEval shape: date first, time at index 3 ("... 13:39 GMT")
+    // or 2 ("2023/04/27 (Thu) 13:39")
     if let Some(d) = parts.first() {
         if d.contains('/') {
-            let t = parts.get(3).copied().unwrap_or("0:0");
+            let t = parts
+                .get(3)
+                .or_else(|| parts.get(2))
+                .copied()
+                .unwrap_or("0:0");
             let dp: Vec<i64> = d.split('/').filter_map(|x| x.parse().ok()).collect();
             let tp: Vec<i64> = t.split(':').filter_map(|x| x.parse().ok()).collect();
             return (((dp.first().copied().unwrap_or(0) * 366
