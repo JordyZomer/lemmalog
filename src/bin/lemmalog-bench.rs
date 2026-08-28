@@ -368,9 +368,31 @@ fn is_counting_question(q: &str) -> bool {
         || l.contains("total ")
         || l.contains("in total")
         || l.contains("number of")
+        // superlatives are aggregation too: "which store did I spend the
+        // most at" needs per-group counts, not a single fact
+        || l.contains(" most ")
+        || l.contains(" least ")
 }
 
-fn counting_context(m: &mut AgentMemory<MockExtractor>, question: &str) -> String {
+/// Lenient plural stem for relevance matching: norm_token only folds
+/// plurals longer than 4 chars, so "owns" never met "own" and count
+/// lines were dropped exactly when they mattered.
+fn stem3(t: &str) -> String {
+    if t.len() >= 3 && t.ends_with('s') && !t.ends_with("ss") {
+        t[..t.len() - 1].to_string()
+    } else {
+        t.to_string()
+    }
+}
+
+fn tokens3(s: &str) -> std::collections::BTreeSet<String> {
+    tokenize_pub(s).into_iter().map(|t| stem3(&t)).collect()
+}
+
+/// Count aggregates for counting-shaped questions: dynamic cnt_<rel>
+/// rules over current(S, R, O), rendered with their member lists. An
+/// additive section — the caller keeps every other context section.
+fn count_section(m: &mut AgentMemory<MockExtractor>, question: &str) -> String {
     // dynamic count rules per distinct relation in current(S, R, O):
     // cnt_<rel>(S, count(O))
     let mut rels: Vec<String> = Vec::new();
@@ -394,17 +416,33 @@ fn counting_context(m: &mut AgentMemory<MockExtractor>, question: &str) -> Strin
         let now = m.engine.now;
         let _ = m.maintain(now);
     }
+    if std::env::var("LEMMALOG_DEBUG").is_ok() {
+        let preds: Vec<String> = m
+            .engine
+            .relations
+            .keys()
+            .filter(|p| p.starts_with("cnt_"))
+            .cloned()
+            .collect();
+        for p in &preds {
+            eprintln!(
+                "debug: {p} rows={} user_rows={}",
+                m.engine.relation_keys(p).len(),
+                m.engine
+                    .relation_keys(p)
+                    .iter()
+                    .filter(|k| k.len() == 2 && m.engine.interner.display(&k[0]) == "the_user")
+                    .count()
+            );
+        }
+    }
 
     // assemble: counts section first (small), then facts, then generous
     // episode text from BM25 over the question
     let mut out = String::from("== counts (derived aggregates) ==\n");
     let mut count_lines = 0;
     let user_sym = m.engine.sym("the_user");
-    let qtokens: std::collections::BTreeSet<String> =
-        lemmalog::retrieval::tokenize_pub(question)
-            .into_iter()
-            .filter(|t| t.len() >= 3)
-            .collect();
+    let qtokens = tokens3(question);
     let preds: Vec<String> = m
         .engine
         .relations
@@ -415,28 +453,67 @@ fn counting_context(m: &mut AgentMemory<MockExtractor>, question: &str) -> Strin
     for pred in &preds {
         for key in m.engine.relation_keys(pred) {
             if key.len() == 2 && key[0] == user_sym {
-                // relevance filter: the count line must share a token with
-                // the question (relation name or the counted object)
+                // relevance filter: the count line (relation name) must
+                // share a stemmed token with the question
                 let line = m.engine.render_fact(pred, &key);
-                let shares = lemmalog::retrieval::tokenize_pub(&line)
-                    .into_iter()
-                    .any(|t| t.len() >= 3 && qtokens.contains(&t));
+                let shares = tokens3(&line).iter().any(|t| t.len() >= 3 && qtokens.contains(t));
                 if !shares {
                     continue;
                 }
-                out.push_str(&format!("{line}\n"));
+                // enumerate the counted members: the reader undercounts
+                // when it only sees part of the set in the prose below
+                let rel = pred.trim_start_matches("cnt_").to_string();
+                let mut members: Vec<String> = Vec::new();
+                for ck in m.engine.relation_keys("current") {
+                    if ck.len() == 3
+                        && ck[0] == user_sym
+                        && m.engine.interner.display(&ck[1]) == rel
+                    {
+                        members.push(m.engine.interner.display(&ck[2]).to_string());
+                    }
+                }
+                // merge name variants: "black Fender Stratocaster" is the
+                // same instrument as "black Fender Stratocaster electric
+                // guitar" — containment dedup keeps the fuller name
+                let mut merged: Vec<String> = Vec::new();
+                for mem in &members {
+                    let lm = mem.to_lowercase();
+                    let contained = merged
+                        .iter()
+                        .any(|k| k.to_lowercase().contains(&lm) || lm.contains(&k.to_lowercase()));
+                    if !contained {
+                        merged.push(mem.clone());
+                    }
+                }
+                let n_raw = key[1].as_int().unwrap_or(0);
+                if merged.len() > 1 && (merged.len() as i64) < n_raw {
+                    out.push_str(&format!(
+                        "{line} — extracted as {} rows, {} distinct after merging name variants: {}\n",
+                        n_raw,
+                        merged.len(),
+                        merged
+                            .iter()
+                            .take(10)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ));
+                } else if !merged.is_empty() {
+                    out.push_str(&format!(
+                        "{line}: {}\n",
+                        merged.iter().take(10).cloned().collect::<Vec<_>>().join("; ")
+                    ));
+                } else {
+                    out.push_str(&format!("{line}\n"));
+                }
                 count_lines += 1;
             }
         }
     }
     if count_lines == 0 {
-        out.clear(); // no counts: fall through to normal context below
+        out.clear(); // no counts: the section is omitted entirely
     }
-    let base = m.context_for_query(question, 2400);
-    if count_lines == 0 {
-        return base;
-    }
-    format!("{out}\n{base}")
+    out
 }
 
 /// Fact and question embeddings for the semantic rerank, with a
@@ -482,16 +559,31 @@ fn semantic_embeds(snap: &str, r: &Retrieval, question: &str) -> Option<(Vec<Vec
     Some((embeds, q))
 }
 
+/// Days since 1970-01-01 from a YYYYMMDD int (Howard Hinnant's
+/// days_from_civil): lets date differences be real subtraction.
+fn ymd_to_days(v: i64) -> i64 {
+    let (y, m, d) = (v / 10000, (v / 100) % 100, v % 100);
+    let (y, m) = if m <= 2 { (y - 1, m + 12) } else { (y, m) };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m - 3) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
 fn context(snap: &str, question: &str) -> String {
     let mut m = AgentMemory::load(MockExtractor::new(0.9), snap).expect("load snapshot");
     let _ = m.maintain(m.engine.now);
-    if is_counting_question(question) {
-        return counting_context(&mut m, question);
-    }
+    let counting = is_counting_question(question);
+    let counts = if counting {
+        count_section(&mut m, question)
+    } else {
+        String::new()
+    };
     let budget: usize = std::env::var("LEMMALOG_CONTEXT_BUDGET")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(1800);
+        .unwrap_or(if counting { 2400 } else { 1800 });
     let r = Retrieval::build(&m.engine, m.episodes());
     let sel = match semantic_embeds(snap, &r, question) {
         Some((fe, q)) => r.select_semantic(question, budget, &fe, &q),
@@ -503,6 +595,26 @@ fn context(snap: &str, question: &str) -> String {
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
+    // reference date: relative time in the question ("two weeks ago")
+    // is unanchored without it, and the reader needs it to do date
+    // arithmetic against session dates
+    let reference_date = dates
+        .iter()
+        .max_by_key(|(k, _)| k.parse::<i64>().unwrap_or(0))
+        .map(|(_, v)| v.clone());
+    if let Some(rd) = &reference_date {
+        let head = format!("CURRENT DATE (most recent session): {rd}\n");
+        base = format!("{head}{base}");
+    }
+    if !counts.is_empty() {
+        // insert after the reference-date line, before the memory section
+        if let Some(pos) = base.find('\n') {
+            let (head, rest) = base.split_at(pos + 1);
+            base = format!("{head}{counts}\n{rest}");
+        } else {
+            base = format!("{counts}\n{base}");
+        }
+    }
     let date_of = |v: &Value| -> String {
         match v.as_int() {
             Some(ts) if ts > 0 && ts != i64::MAX => dates
@@ -622,6 +734,95 @@ fn context(snap: &str, question: &str) -> String {
             "\nMENTION TIMELINE (first mention in conversation; mention order is NOT event order):\n{}\n",
             lines.join("\n")
         ));
+    }
+    // date facts with precomputed differences: the reader reliably states
+    // both dates and then fails to subtract — the engine owns the
+    // arithmetic
+    let q_lower = question.to_lowercase();
+    let wants_dates = [
+        "how many days", "how many months", "how long", "before", "after",
+        "ago", "between", "when did", "what date", "which day",
+    ]
+    .iter()
+    .any(|p| q_lower.contains(p));
+    if wants_dates {
+        let qt = tokens3(question);
+        let tok_match = |a: &str, b: &str| -> bool {
+            a == b || (a.len() >= 4 && b.len() >= 4 && (a.starts_with(b) || b.starts_with(a)))
+        };
+        // date-bearing current facts matched to the question by tokens
+        let mut date_facts: Vec<(String, i64)> = Vec::new();
+        for key in m.engine.relation_keys("current") {
+            if key.len() != 3 {
+                continue;
+            }
+            let obj = m.engine.interner.display(&key[2]).to_string();
+            let Some(ymd) = lemmalog::longmemeval::date_to_int(&obj) else {
+                continue;
+            };
+            let line = format!(
+                "{} --{}--> {}",
+                m.engine.interner.display(&key[0]),
+                m.engine.interner.display(&key[1]),
+                obj
+            );
+            let matched = tokens3(&line)
+                .iter()
+                .any(|t| t.len() >= 3 && qt.iter().any(|q| tok_match(q, t)));
+            if matched && !date_facts.iter().any(|(l, _)| l == &line) {
+                date_facts.push((line, ymd));
+            }
+        }
+        date_facts.truncate(6);
+        if !date_facts.is_empty() {
+            let mut sec = String::from(
+                "\nDATE FACTS (facts carrying dates; differences computed):\n",
+            );
+            // reference ymd from the sidecar date string ("2023/05/30 ...")
+            let ref_ymd = reference_date.as_ref().and_then(|d| {
+                d.split_whitespace()
+                    .next()
+                    .and_then(|p| {
+                        let dp: Vec<i64> =
+                            p.split('/').filter_map(|x| x.parse().ok()).collect();
+                        (dp.len() == 3)
+                            .then(|| dp[0] * 10000 + dp[1] * 100 + dp[2])
+                    })
+            });
+            for (line, ymd) in &date_facts {
+                if let Some(r) = ref_ymd {
+                    let dd = ymd_to_days(r) - ymd_to_days(*ymd);
+                    if dd > 0 {
+                        sec.push_str(&format!(
+                            "{line} — {} days before current date (~{} months ago)\n",
+                            dd,
+                            (dd as f64 / 30.44).round()
+                        ));
+                        continue;
+                    }
+                }
+                sec.push_str(&format!("{line}\n"));
+            }
+            let mut pairs = 0;
+            for i in 0..date_facts.len() {
+                for j in i + 1..date_facts.len() {
+                    if pairs >= 6 {
+                        break;
+                    }
+                    let (a, b) = (&date_facts[i], &date_facts[j]);
+                    let dd = (ymd_to_days(b.1) - ymd_to_days(a.1)).abs();
+                    sec.push_str(&format!(
+                        "{} vs {}: {} days apart (~{} months)\n",
+                        a.0,
+                        b.0,
+                        dd,
+                        (dd as f64 / 30.44).round()
+                    ));
+                    pairs += 1;
+                }
+            }
+            base.push_str(&sec);
+        }
     }
     base
 }

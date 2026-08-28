@@ -301,35 +301,39 @@ are F1 on their leaderboard.
 System              F1 (answer tokens)
 PropMem (pub)        0.550   (23.1M all-phase)
 SimpleMem (pub)      0.480   (20.8M all-phase)
-lemmalog             0.429   (  256K answer-phase)
-OpenClaw (pub)       0.244   (  0.7M)
+lemmalog             0.463 ± 0.010 (3 runs)  (280K answer-phase)
+OpenClaw (pub)       0.244   ( 0.7M)
 fullcontext (ours)   0.197   (10.6M)
 fullcontext (pub)    0.222   (10.6M)
 ```
 
-Binary accuracy 0.510 (gpt-4o judge). Per-category (F1 / accuracy):
+Binary accuracy 0.575 ± 0.004 (3 runs, gpt-4o judge). Per-category
+(single run, F1 / accuracy):
 
 ```
-Single-Session User         0.754 / 0.882
-Knowledge Update            0.584 / 0.647
-Single-Session Assistant    0.686 / 0.882
-Temporal Reasoning          0.302 / 0.353
-Multi-Session               0.113 / 0.118
-Single-Session Preference   0.137 / 0.176
+Single-Session User         0.790 / 0.941
+Knowledge Update            0.579 / 0.647
+Single-Session Assistant    0.672 / 0.882
+Temporal Reasoning          0.416 / 0.412
+Multi-Session               0.211 / 0.353
+Single-Session Preference   0.128 / 0.235
 ```
 
 Reading it honestly:
 
-- **F1 0.429, accuracy 0.510 — 2.2x our own full-context run (0.197) on
-  the same questions** — at 1/45th the answer-phase tokens. Closing on
-  SimpleMem's published 0.480; PropMem (0.550) still ahead.
+- **F1 0.463 ± 0.010 (3 runs), accuracy 0.575 — 2.4x our own
+  full-context run (0.197) on the same questions** — at 1/40th the
+  answer-phase tokens. Statistically at SimpleMem's published 0.480;
+  PropMem (0.550) still ahead.
 - **The improvement arc is the story**: the first configuration scored
-  F1 0.226; diagnosing the actual wrong answers (counts close-but-wrong,
-  "None" on recall misses) and shipping three targeted fixes — counting
-  aggregates via the aggregation engine, terse-answer prompts, and a
-  question-targeted recall fallback — nearly doubled F1 in one
-  iteration: knowledge-update 0.218 → 0.584, user-facts 0.359 → 0.754,
-  multi-session 0.013 → 0.113.
+  F1 0.226; diagnosing the actual wrong answers and shipping targeted
+  fixes — counting aggregates via the aggregation engine, terse-answer
+  prompts, a question-targeted recall fallback, then count sections with
+  member enumeration (fixed by a plural-stemming hole: "owns" never
+  matched "own", silently dropping every count line), a reference-date
+  anchor, and precomputed date arithmetic — more than doubled F1:
+  knowledge-update 0.218 → 0.579, user-facts 0.359 → 0.790,
+  multi-session 0.013 → 0.211, temporal 0.373 → 0.416.
 - **Abstention semantics are a cross-benchmark tension, measured**: a
   strict "refuse unless directly stated" reader won LoCoMo's adversarial
   category (false-premise questions) but collapsed LongMemEval to 0.371
@@ -337,17 +341,22 @@ Reading it honestly:
   "how many subscriptions?") that no single fact states, and strict
   refusal scored them all zero. The shipped policy refuses only
   misattribution or absent subjects and *synthesizes* (count, compare,
-  combine dates) when evidence exists — recovering 0.429/0.510 here
-  while keeping LoCoMo adversarial above both baseline and full context.
-- **The remaining gap is characterized**: preference questions score
-  near-floor (unmatchable prose golds, both modes — though 0.137 is
-  above the old floor); multi-session counting is bounded by extraction
-  recall of enumerable items; temporal arithmetic (0.302) needs the
-  reader to compute durations from extracted dates.
-- **Token economics**: 256K answer-phase tokens across 102 questions
-  (~2.5K/question vs ~100K for full context); extraction is paid once
-  per conversation (~$0.20 Sonnet, cached forever) and amortizes across
-  every additional question.
+  combine dates) when evidence exists.
+- **Date arithmetic belongs to the engine**: the reader reliably states
+  both dates and then fails to subtract, so the context now carries a
+  CURRENT DATE anchor (relative time like "two weeks ago" was
+  unanchored) and DATE FACTS with differences precomputed
+  (`days_from_civil` over extracted `*_on` dates).
+- **The remaining gap is characterized**: preference questions stay
+  low (unmatchable prose golds, both modes); some multi-session targets
+  were never extracted (the Airbnb booking produced zero facts — an
+  extraction-recall bound, not a retrieval one); money amounts are not
+  extracted as numbers, so per-group sums are out of reach without
+  re-extraction.
+- **Token economics**: ~2.7K answer-phase tokens per question vs ~100K
+  for full context; extraction is paid once per conversation (~$0.20
+  Sonnet, cached forever) and amortizes across every additional
+  question.
 
 ## LoCoMo: the second standardized benchmark (10 conversations, 1,986 questions)
 
@@ -359,7 +368,7 @@ Rank  System          F1      Tokens (all-phase)
  1    PropMem (pub)   0.605     5.9M
  2    OpenClaw (pub)  0.557    16.4M
  3    FullCtx (pub)   0.542    37.5M
- —    lemmalog        0.528     6.6M
+ —    lemmalog        0.533 ± 0.001 (3 runs)  6.8M
  4    Hindsight(pub)  0.489    24.2M
  5    Graphiti (pub)  0.416     5.1M
  6    Memory-R1(pub)  0.389     3.4M
@@ -368,8 +377,10 @@ Rank  System          F1      Tokens (all-phase)
 
 **3rd of 10**, ahead of Hindsight, Graphiti, Memory-R1, SimpleMem, Mem0,
 and MemU at 1/4th-1/6th their token spend, behind only PropMem and
-OpenClaw. The jump from 0.483 came from four retrieval-side upgrades
-(extraction re-run; same reader, same judge):
+OpenClaw. Run-to-run σ is 0.001 (three full 1,986-question runs); the
+cross-conversation spread (±0.03) is the honest single-run uncertainty.
+The jump from 0.483 came from five retrieval-side upgrades (extraction
+re-run; same reader, same judge):
 
 1. **Temporal normalization** — the extractor emits `YYYY-MM-DD`-form
    date objects, the ingester lowers them to comparable integers
@@ -391,31 +402,39 @@ OpenClaw. The jump from 0.483 came from four retrieval-side upgrades
    subject is absent or the premise misattributes; when evidence exists
    but no single fact states the answer, it synthesizes (count, compare,
    combine dates). Refusal is final — no recall fallback after a
-   deliberate abstention. Adversarial F1 0.676 → 0.702 (see the
+   deliberate abstention. Adversarial F1 0.676 → 0.707 (see the
    LongMemEval section for why the stricter version was walked back).
+5. **Count sections with members + a date anchor** — count aggregates
+   render with their member lists (variant-merged), every context opens
+   with the CURRENT DATE, and date-shaped questions get DATE FACTS with
+   differences precomputed. The counting path had been silently dead on
+   LongMemEval: the relevance filter's plural stem only folded words
+   longer than 4 chars, so "owns" never matched "own" and every count
+   line was dropped.
 
 Per-category (before → after):
 
 ```
                     before  after   PropMem  FullCtx
-Multi-hop (N=841)    0.544   0.542    0.599    0.674
-Adversarial (N=446)  0.676   0.702    0.794    0.509
-Factual (N=282)      0.368   0.396    0.431    0.517
-Temporal (N=321)     0.257   0.463    0.615    0.369
-Inferential (N=96)   0.143   0.150    0.289    0.197
+Multi-hop (N=841)    0.544   0.545    0.599    0.674
+Adversarial (N=446)  0.676   0.707    0.794    0.509
+Factual (N=282)      0.368   0.399    0.431    0.517
+Temporal (N=321)     0.257   0.454    0.615    0.369
+Inferential (N=96)   0.143   0.164    0.289    0.197
 ```
 
-Notable: **adversarial 0.702 beats full-context (0.509) by +0.19** —
+Notable: **adversarial 0.707 beats full-context (0.509) by +0.20** —
 those are questions designed to bait false memories (misattributed
 premises: "what was grandma's gift to Melanie?" when the gift story is
 about someone else), and the structured memory says "no" honestly rather
 than confabulating from loose retrieval.
 
-Two benchmark rows, both on their standardized harnesses, both honest:
-LongMemEval F1 0.429 / accuracy 0.510 (at 1/45th the tokens) and LoCoMo
-F1 0.528 (3rd of 10). The consistent pattern: competitive with the leaders
-on structure-rewarding categories, ahead of every retrieval-first
-system, behind PropMem overall.
+Two benchmark rows, both on their standardized harnesses, both with
+repeated measures: LongMemEval F1 0.463 ± 0.010 / accuracy 0.575 ± 0.004
+(at 1/40th the tokens) and LoCoMo F1 0.533 ± 0.001 (3rd of 10). The
+consistent pattern: competitive with the leaders on structure-rewarding
+categories, ahead of every retrieval-first system, behind PropMem
+overall.
 
 ## Token economics (the honest numbers)
 
