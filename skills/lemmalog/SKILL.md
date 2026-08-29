@@ -35,10 +35,14 @@ your context.
 
 1. **Assert as you verify.** The moment you confirm something — a call
    edge, a config value, a decision, a step completed — assert it:
-   `S --rel[conf]--> O`. Omit the confidence tag for read-and-verified;
-   tag inferences `[0.4]`–`[0.7]`. Anchor evidence with
-   `located(Entity, "file:line")` (or any stable reference) so provenance
-   survives derivation. Never assert what you haven't checked.
+   `S --rel[conf]--> O`. Tag read-and-verified facts `[1.0]` and inferences
+   `[0.4]`–`[0.7]`. Do not omit the tag on anything you expect to derive over:
+   the default is 0.9 and confidence is a product down the proof chain, so four
+   hops of "verified" facts land at 0.66 and a deep closure decays to noise.
+   Anchor evidence with `located(Entity, "file:line")` (or any stable
+   reference) so provenance survives derivation — source references are valid
+   entity tokens as long as they contain no spaces. Never assert what you
+   haven't checked.
 2. **Install rules when a pattern repeats.** If you ask the same shape of
    question twice, write the Datalog for it: transitive closures, guard
    tracking, status rollups, `count`/`min`/`max`/`sum` aggregates. Rules
@@ -91,6 +95,11 @@ decision(Id, What)            % choices made, so state stays complete
 - Bare capitalized words are **variables** — quote entity names:
   `reports_to("Alice", Y)`, never `reports_to(Alice, Y)`.
 - Fact line protocol: `S --rel[conf]--> O`, one per line.
+- **An asserted fact is `current(S, rel, O)`, not `rel(S, O)`.** Rule bodies
+  match the triple: `reaches(X, Y) :- current(X, depends_on, Y).` Writing
+  `depends_on(X, Y)` instead installs cleanly, reports a backfill count, and
+  then derives nothing — the failure is silent, so check a new rule with one
+  `lemmalog_query` before building on it.
 - Rule syntax: `head(X, Y) :- atom(X, Y), X \= Z.` with `!atom` negation,
   `now(T)`, comparisons, arithmetic; aggregates only in heads.
 - Errors are actionable: every `isError` result carries the offending
