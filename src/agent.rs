@@ -107,9 +107,15 @@ fn entity_token_problem(s: &str) -> Option<String> {
         Some("looks like prose (more than 8 words) — entity names are short".to_string())
     } else if !s
         .chars()
-        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '\'' | ' '))
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '\'' | ' ' | '/' | '.' | ':' | '#'))
     {
-        Some("contains punctuation or prose characters — entity names use letters, digits, '_', '-', apostrophes".to_string())
+        Some("contains punctuation or prose characters — entity names use letters, digits, '_', '-', apostrophes, and '/', '.', ':', '#' in source references".to_string())
+    } else if s.contains(' ') && s.chars().any(|c| matches!(c, '/' | '.' | ':' | '#')) {
+        // Path characters are allowed so that source references
+        // (`src/agent.rs:118`) can be entities, but only as single tokens:
+        // punctuation *plus* spaces is the signature of leaked prose, which
+        // is exactly what strict validation exists to drop.
+        Some("looks like prose — source references must not contain spaces (`src/agent.rs:118`, not `see src/agent.rs, line 118`)".to_string())
     } else {
         None
     }

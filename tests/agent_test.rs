@@ -293,3 +293,34 @@ fn observe_extracted_applies_policy_and_reports_drops() {
         vec!["O=acme".to_string()]
     );
 }
+
+#[test]
+fn source_references_are_valid_entities() {
+    use lemmalog::agent::parse_protocol_reported;
+    let (facts, dropped) = parse_protocol_reported(
+        "sketch_mode --located--> src/features/sketchMode/bind.ts\n\
+         entity_token_problem --defined_at--> src/agent.rs:92\n\
+         parser --tracked_by--> JordyZomer/lemmalog#12\n\
+         sketch_mode --depends_on--> engine_scene",
+        1.0,
+    );
+    assert_eq!(facts.len(), 4, "dropped: {dropped:?}");
+    assert!(dropped.is_empty(), "{dropped:?}");
+    assert_eq!(facts[1].obj, "src/agent.rs:92");
+}
+
+#[test]
+fn punctuation_with_spaces_is_still_prose() {
+    use lemmalog::agent::parse_protocol_reported;
+    let (facts, dropped) = parse_protocol_reported(
+        "thing --located--> see src/agent.rs, around line 118\n\
+         thing --noted--> Yes. Confirmed.",
+        1.0,
+    );
+    assert!(facts.is_empty(), "{facts:?}");
+    assert_eq!(dropped.len(), 2);
+    assert!(
+        dropped.iter().all(|(_, r)| r.contains("prose")),
+        "{dropped:?}"
+    );
+}
