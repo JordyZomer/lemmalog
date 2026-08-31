@@ -177,9 +177,17 @@ extract one triple per row (rotation, shift, assignment, ...).\n\
 Temporal: when the episode states WHEN something happened or will happen \
 (a full date, 'in 2019', 'last March', 'next week'), extract one triple \
 with a normalized date object in YYYY, YYYY-MM, or YYYY-MM-DD form \
-(visited_on, moved_on, starts_on, planned_for). When it states that one \
-thing happened before another, extract A --before--> B. Never guess a \
-date or an ordering the text does not state.\n\
+(visited_on, moved_on, starts_on, planned_for). The episode header shows \
+the session date — resolve relative dates ('last March', 'two years ago') \
+against it. When it states that one thing happened before another, \
+extract A --before--> B. Never guess a date or an ordering the text does \
+not state.\n\
+Amounts: extract monetary amounts as plain numbers without symbols \
+('$50' -> 50) in dedicated relations (price_paid, amount_spent, cost).\n\
+Lists: if the episode enumerates items ('I bought three postcards', a \
+roster of subscriptions, instruments, books), extract ONE triple per \
+item, naming each item by its description in the text — a count is not \
+a fact, the items are.\n\
 Preferences: unconditional likes are likes. Conditional preferences ('I \
 prefer lively places when I'm with friends') are prefers_when with the \
 condition as the object. Never assert the condition itself as a fact \

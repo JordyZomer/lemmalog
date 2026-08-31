@@ -301,59 +301,51 @@ are F1 on their leaderboard.
 System              F1 (answer tokens)
 PropMem (pub)        0.550   (23.1M all-phase)
 SimpleMem (pub)      0.480   (20.8M all-phase)
-lemmalog             0.480 ± 0.012 (3 runs)  (283K answer-phase)
+lemmalog             0.469 ± 0.005 (3 runs)  (467K answer-phase)
 OpenClaw (pub)       0.244   ( 0.7M)
 fullcontext (ours)   0.197   (10.6M)
 fullcontext (pub)    0.222   (10.6M)
 ```
 
-Binary accuracy 0.559 ± 0.008 (3 runs, gpt-4o judge). Per-category
+Binary accuracy 0.566 ± 0.009 (3 runs, gpt-4o judge). Per-category
 (single run, F1 / accuracy):
 
 ```
-Single-Session User         0.829 / 0.941
-Knowledge Update            0.528 / 0.647
-Single-Session Assistant    0.627 / 0.882
-Temporal Reasoning          0.416 / 0.471
-Multi-Session               0.465 / 0.471
-Single-Session Preference   0.087 / 0.000
+Single-Session User         0.919 / 0.941
+Knowledge Update            0.405 / 0.529
+Single-Session Assistant    0.649 / 0.882
+Temporal Reasoning          0.410 / 0.412
+Multi-Session               0.365 / 0.412
+Single-Session Preference   0.116 / 0.235
 ```
 
 Reading it honestly:
 
-- **F1 0.480 ± 0.012 (3 runs) — at SimpleMem's published 0.480, 2.4x our
-  own full-context run (0.197)** — at 1/37th the answer-phase tokens.
-  PropMem (0.550) still ahead.
+- **F1 0.469 ± 0.005 (3 runs) — 2.4x our own full-context run (0.197)**
+  — within 0.011 of SimpleMem's published 0.480, at 1/22nd the
+  answer-phase tokens. PropMem (0.550) still ahead.
 - **The improvement arc is the story**: the first configuration scored
-  F1 0.226; diagnosing the actual wrong answers and shipping targeted
-  fixes — counting aggregates via the aggregation engine, terse-answer
-  prompts, a question-targeted recall fallback, count sections with
-  member enumeration (fixed by a plural-stemming hole: "owns" never
-  matched "own", silently dropping every count line), a reference-date
-  anchor, precomputed date arithmetic, and premise-gated answering —
-  more than doubled F1: knowledge-update 0.218 → 0.528, user-facts
-  0.359 → 0.829, multi-session 0.013 → 0.465, temporal 0.373 → 0.416.
-- **Loss accounting drives the iteration** (`benchmarks/loss_analysis.py`
-  traces every wrong answer to refusal / extraction / retrieval / reader /
-  format buckets): on this run the largest buckets were answers that were
-  *correct but verbose* against terse golds ("2 (The New Yorker and…)"
-  vs gold "2") and refusals issued while the evidence sat in the store.
-  The shipped reader prompt fixes both — bare numbers for how-many
-  questions, and a two-step discipline: check WHO the facts are about
-  (misattribution → refuse), then answering from evidence is mandatory
-  once the premise checks out. Multi-session 0.211 → 0.465 in one
-  prompt iteration. The trade was measured both ways: unconditional
-  answer-pressure collapsed LoCoMo's adversarial category (0.707 →
-  0.578) by accepting misattributed premises; premise-gating recovers
-  it (0.717) while keeping the LongMemEval gain.
-- **The remaining gap is characterized**: preference questions stay low
-  (unmatchable prose golds, every system is floored there — terse
-  answers clash harder, 0.087); some multi-session targets were never
-  extracted (the Airbnb booking produced zero facts); money amounts are
-  not extracted as numbers, so per-group sums need a re-extraction cycle.
-- **Token economics**: ~2.8K answer-phase tokens per question vs ~104K
-  for full context; extraction is paid once per conversation (~$0.20
-  Sonnet, cached forever) and amortizes across every additional
+  F1 0.226; diagnosing the actual wrong answers (`benchmarks/loss_analysis.py`
+  traces every loss to refusal / extraction / retrieval / reader / format
+  buckets) and shipping targeted fixes — counting aggregates, terse
+  answers, recall fallback, count sections with member enumeration, a
+  reference-date anchor, precomputed date arithmetic, premise-gated
+  answering with evidence-injected refusal-retry, per-item enumeration
+  extraction, and a selection budget that scales with the store — more
+  than doubled F1: user-facts 0.359 → 0.919, multi-session 0.013 → 0.365,
+  temporal 0.373 → 0.410.
+- **Richer extraction needs richer selection**: per-item enumeration
+  extraction grew the store ~2x and initially DROPPED F1 to 0.435 — more
+  facts competing for the same context budget starves selection. Scaling
+  the budget (1800 → 3200) recovered it to 0.469. Selection, not
+  extraction, is the binding constraint on this benchmark.
+- **Knowledge-update regressed with enumeration** (0.528 → 0.405):
+  historical enumerated items pollute current-state questions — the
+  known next lever is validity-interval-aware selection (prefer facts
+  still open at the reference date).
+- **Token economics**: ~4.6K answer-phase tokens per question vs ~104K
+  for full context (22x); extraction is paid once per conversation
+  (~$0.25 Sonnet, cached forever) and amortizes across every additional
   question.
 
 ## LoCoMo: the second standardized benchmark (10 conversations, 1,986 questions)
@@ -364,77 +356,57 @@ published leaderboard:
 ```
 Rank  System          F1      Tokens (all-phase)
  1    PropMem (pub)   0.605     5.9M
+ —    lemmalog        0.573 ± 0.002 (3 runs)  11.3M
  2    OpenClaw (pub)  0.557    16.4M
  3    FullCtx (pub)   0.542    37.5M
- —    lemmalog        0.526 ± 0.001 (3 runs)  6.8M
  4    Hindsight(pub)  0.489    24.2M
  5    Graphiti (pub)  0.416     5.1M
  6    Memory-R1(pub)  0.389     3.4M
  7    SimpleMem(pub)  0.358    11.4M
 ```
 
-**3rd of 10**, ahead of Hindsight, Graphiti, Memory-R1, SimpleMem, Mem0,
-and MemU at 1/4th-1/6th their token spend, behind only PropMem and
-OpenClaw. Run-to-run σ is 0.001 (three full 1,986-question runs); the
-cross-conversation spread (±0.04) is the honest single-run uncertainty.
-The jump from 0.483 came from five retrieval-side upgrades (extraction
-re-run; same reader, same judge):
+**2nd of 10** — ahead of OpenClaw, full-context, Hindsight, Graphiti,
+Memory-R1, SimpleMem, Mem0, and MemU; behind only PropMem. Run-to-run σ
+is 0.002 (three full 1,986-question runs). The journey from 0.483 came
+in three measured stages (same reader, same judge):
 
-1. **Temporal normalization** — the extractor emits `YYYY-MM-DD`-form
-   date objects, the ingester lowers them to comparable integers
-   (`dated`), and `happened_before` derives from real time instead of
-   symbol-interning order (a latent bug: the engine's `<` on symbols
-   compares intern ids, not text). Temporal F1 0.257 → 0.447.
-2. **Entity reconciliation, wired** — `canonical::reconcile` existed but
-   nothing called it. One LLM pass per conversation asserts
-   confidence-tagged `alias` edges (candidates: substring,
-   same-(subject,relation) co-objects, embedding-similar); the Datalog
-   closure derives `same_as`, retrieval bridges adjacency through the
-   clusters, and high-confidence merges render for the reader.
-3. **Embedding rerank fused into retrieval** — local nomic embeddings,
-   cosine above a noise floor added to BM25 + entity boosts; facts with
-   zero lexical overlap with the question ("kitchen gadget" ↔ "Instant
-   Pot") now surface.
-4. **Explicit abstention** — the reader checks the question's premise
-   (who the facts are about) and refuses with "Not mentioned" when the
-   subject is absent or the premise misattributes; once the premise
-   checks out, answering from evidence is mandatory (count, compare,
-   combine dates — even if the answer is not stated directly). Refusal
-   is final — no recall fallback after a deliberate abstention.
-   Adversarial F1 0.676 → 0.717.
-5. **Count sections with members + a date anchor** — count aggregates
-   render with their member lists (variant-merged), every context opens
-   with the CURRENT DATE, and date-shaped questions get DATE FACTS with
-   differences precomputed. The counting path had been silently dead on
-   LongMemEval: the relevance filter's plural stem only folded words
-   longer than 4 chars, so "owns" never matched "own" and every count
-   line was dropped.
+1. **Retrieval-side upgrades** (temporal normalization, wired
+   reconciliation, embedding rerank, conditional-preference discipline):
+   0.483 → 0.533.
+2. **Reader discipline** (premise-gated answering: check WHO the facts
+   are about — misattribution → refuse; premise passed → answering from
+   evidence is mandatory, bare numbers for how-many questions):
+   adversarial 0.676 → 0.717.
+3. **Evidence-injected refusal-retry + attribution contrast + per-item
+   enumeration extraction + store-scaled selection budget**: a
+   `hasevidence` check (subject-excluded topic overlap — misattributed
+   premises fail it and stay refused) re-asks refused questions with
+   the verified facts quoted; an ATTRIBUTION section shows which
+   subjects hold topic facts and which question-mentioned parties hold
+   none; extraction emits one triple per enumerated item; the context
+   budget scales with the store (1800 → 3200). 0.533 → 0.573.
 
-Per-category (before → after):
+Per-category (first run → final):
 
 ```
-                    before  after   PropMem  FullCtx
-Multi-hop (N=841)    0.544   0.537    0.599    0.674
-Adversarial (N=446)  0.676   0.717    0.794    0.509
-Factual (N=282)      0.368   0.410    0.431    0.517
-Temporal (N=321)     0.257   0.444    0.615    0.369
-Inferential (N=96)   0.143   0.169    0.289    0.197
+                    first   final   PropMem  FullCtx
+Multi-hop (N=841)    0.544   0.615    0.599    0.674
+Adversarial (N=446)  0.676   0.738    0.794    0.509
+Factual (N=282)      0.368   0.418    0.431    0.517
+Temporal (N=321)     0.257   0.489    0.615    0.369
+Inferential (N=96)   0.143   0.213    0.289    0.197
 ```
 
-Notable: **adversarial 0.717 beats full-context (0.509) by +0.21** —
+Notable: **adversarial 0.738 beats full-context (0.509) by +0.23** —
 those are questions designed to bait false memories (misattributed
-premises: "what was grandma's gift to Melanie?" when the gift story is
-about someone else), and the structured memory says "no" honestly rather
-than confabulating from loose retrieval. Loss accounting
-(`benchmarks/loss_analysis.py`) shows where the remaining F1 lives: of
-~810 lost points, ~693 are answer-side (verbose-but-correct answers,
-refusals with evidence present, uncaught misattributions) versus ~101
-extraction-side — the reader discipline above converted the largest of
-those without spending a re-extraction cycle.
+premises), and the structured memory says "no" honestly: the
+attribution contrast names the party with no supporting facts, and the
+retry guard refuses to manufacture evidence for them. Multi-hop 0.615
+now beats PropMem's 0.599.
 
 Two benchmark rows, both on their standardized harnesses, both with
-repeated measures: LongMemEval F1 0.480 ± 0.012 / accuracy 0.559 ± 0.008
-(at 1/37th the tokens) and LoCoMo F1 0.526 ± 0.001 (3rd of 10). The
+repeated measures: LongMemEval F1 0.469 ± 0.005 / accuracy 0.566 ± 0.009
+(at 1/22nd the tokens) and LoCoMo F1 0.573 ± 0.002 (2nd of 10). The
 consistent pattern: competitive with the leaders on structure-rewarding
 categories, ahead of every retrieval-first system, behind PropMem
 overall.

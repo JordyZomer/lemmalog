@@ -51,6 +51,17 @@ fn main() {
             let ctx = context(snap, question);
             print!("{ctx}");
         }
+        Some("hasevidence") => {
+            let (snap, question) = (
+                args.get(2).expect("usage: hasevidence <snapshot> <question>"),
+                args.get(3).expect("usage: hasevidence <snapshot> <question>"),
+            );
+            let mut m = AgentMemory::load(MockExtractor::new(0.9), snap).expect("load snapshot");
+            let _ = m.maintain(m.engine.now);
+            for l in evidence_lines(&m, question) {
+                println!("{l}");
+            }
+        }
         Some("recall") => {
             let (snap, question) = (
                 args.get(2).expect("usage: recall <snapshot> <question>"),
@@ -216,6 +227,30 @@ fn ingest(conv_path: &str, snap: &str) {
         }
     }
     eprintln!("  temporal: {dated_count} dated facts normalized");
+    // plain-number objects (amounts, quantities) -> numeric(S, R, Int) so
+    // the aggregation engine can sum them ("which store did I spend the
+    // most at" is a per-group sum, not a count)
+    let mut numeric_count = 0usize;
+    for key in m.engine.relation_keys("current") {
+        if key.len() != 3 {
+            continue;
+        }
+        let obj = m.engine.interner.display(&key[2]).to_string();
+        let is_plain_number = !obj.is_empty()
+            && obj.len() <= 6
+            && obj.chars().all(|c| c.is_ascii_digit())
+            && lemmalog::longmemeval::date_to_int(&obj).is_none();
+        if is_plain_number {
+            let n: i64 = obj.parse().unwrap_or(0);
+            if m
+                .engine
+                .declare("numeric", &[key[0], key[1], Value::Int(n)], lemmalog::eval::Ann::base(0.95, ["num_norm"]))
+            {
+                numeric_count += 1;
+            }
+        }
+    }
+    eprintln!("  numeric: {numeric_count} amount facts normalized");
     // entity reconciliation: canonical rules + alias pass (one LLM call)
     m.engine
         .install_program(canonical::CANONICAL_RULES)
@@ -389,6 +424,60 @@ fn tokens3(s: &str) -> std::collections::BTreeSet<String> {
     tokenize_pub(s).into_iter().map(|t| stem3(&t)).collect()
 }
 
+/// Topic overlap between a fact row and a question, EXCLUDING the
+/// subject's own name tokens: a fact "Melanie --likes--> hiking" overlaps
+/// a question about Melanie only through its relation/object. This is
+/// what makes misattribution detectable — "grandma's gift to Melanie"
+/// scores 0 on Melanie's facts (the gift story is Caroline's).
+fn topic_overlap(line_tokens: &std::collections::BTreeSet<String>, subj: &str, qt: &std::collections::BTreeSet<String>) -> usize {
+    let subj_toks = tokens3(subj);
+    line_tokens
+        .iter()
+        .filter(|t| {
+            t.len() >= 3
+                && !subj_toks.contains(*t)
+                && qt.iter().any(|q| {
+                    q == *t || (q.len() >= 4 && t.len() >= 4 && (q.starts_with(t.as_str()) || t.starts_with(q.as_str())))
+                })
+        })
+        .count()
+}
+
+/// Facts whose relation/object content matches the question (excluding
+/// the subject name). Backs the refusal-retry: a retry is only offered
+/// when the store genuinely holds topic evidence.
+fn evidence_lines(m: &AgentMemory<MockExtractor>, question: &str) -> Vec<String> {
+    let qt = tokens3(question);
+    let mut scored: Vec<(usize, String)> = Vec::new();
+    for key in m.engine.relation_keys("current") {
+        if key.len() != 3 {
+            continue;
+        }
+        let subj = m.engine.interner.display(&key[0]).to_string();
+        let line = format!(
+            "{} --{}--> {}",
+            subj,
+            m.engine.interner.display(&key[1]),
+            m.engine.interner.display(&key[2])
+        );
+        let ov = topic_overlap(&tokens3(&line), &subj, &qt);
+        if ov >= 2 {
+            scored.push((ov, line));
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut out: Vec<String> = Vec::new();
+    for (_, l) in scored {
+        if out.len() >= 12 {
+            break;
+        }
+        if !out.contains(&l) {
+            out.push(l);
+        }
+    }
+    out
+}
+
 /// Count aggregates for counting-shaped questions: dynamic cnt_<rel>
 /// rules over current(S, R, O), rendered with their member lists. An
 /// additive section — the caller keeps every other context section.
@@ -413,6 +502,29 @@ fn count_section(m: &mut AgentMemory<MockExtractor>, question: &str) -> String {
     }
     if !rules.is_empty() {
         let _ = m.engine.install_program(&rules);
+        let now = m.engine.now;
+        let _ = m.maintain(now);
+    }
+    // per-relation SUMs over numeric facts: "most money at which store"
+    // is a grouped sum, which the aggregation engine computes exactly
+    let mut sum_rules = String::new();
+    let mut numeric_rels: Vec<String> = Vec::new();
+    for key in m.engine.relation_keys("numeric") {
+        if key.len() == 3 {
+            let r = m.engine.interner.display(&key[1]).to_string();
+            if !numeric_rels.contains(&r) {
+                numeric_rels.push(r);
+            }
+        }
+    }
+    for r in &numeric_rels {
+        let safe = r.replace('/', "_");
+        sum_rules.push_str(&format!(
+            "sum_{safe}(S, sum(N)) :- numeric(S, \"{r}\", N).\n"
+        ));
+    }
+    if !sum_rules.is_empty() {
+        let _ = m.engine.install_program(&sum_rules);
         let now = m.engine.now;
         let _ = m.maintain(now);
     }
@@ -510,6 +622,47 @@ fn count_section(m: &mut AgentMemory<MockExtractor>, question: &str) -> String {
             }
         }
     }
+    // per-relation SUMs over normalized numeric facts: "most money at
+    // which store" is a grouped sum, which the aggregation engine
+    // computes exactly
+    let mut sum_lines = 0;
+    let sum_preds: Vec<String> = m
+        .engine
+        .relations
+        .keys()
+        .filter(|p| p.starts_with("sum_"))
+        .cloned()
+        .collect();
+    for pred in &sum_preds {
+        for key in m.engine.relation_keys(pred) {
+            if key.len() == 2 && key[0] == user_sym {
+                let line = m.engine.render_fact(pred, &key);
+                let shares = tokens3(&line).iter().any(|t| t.len() >= 3 && qtokens.contains(t));
+                if !shares {
+                    continue;
+                }
+                let rel = pred.trim_start_matches("sum_").to_string();
+                let members: Vec<String> = m
+                    .engine
+                    .relation_keys("numeric")
+                    .into_iter()
+                    .filter(|k| {
+                        k.len() == 3
+                            && k[0] == user_sym
+                            && m.engine.interner.display(&k[1]) == rel
+                    })
+                    .map(|k| m.engine.interner.display(&k[2]).to_string())
+                    .collect();
+                out.push_str(&format!(
+                    "{line} ({} entries: {})\n",
+                    members.len(),
+                    members.join(", ")
+                ));
+                sum_lines += 1;
+            }
+        }
+    }
+    count_lines += sum_lines;
     if count_lines == 0 {
         out.clear(); // no counts: the section is omitted entirely
     }
@@ -583,7 +736,7 @@ fn context(snap: &str, question: &str) -> String {
     let budget: usize = std::env::var("LEMMALOG_CONTEXT_BUDGET")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(if counting { 2400 } else { 1800 });
+        .unwrap_or(if counting { 3800 } else { 3200 });
     let r = Retrieval::build(&m.engine, m.episodes());
     let sel = match semantic_embeds(snap, &r, question) {
         Some((fe, q)) => r.select_semantic(question, budget, &fe, &q),
@@ -734,6 +887,64 @@ fn context(snap: &str, question: &str) -> String {
             "\nMENTION TIMELINE (first mention in conversation; mention order is NOT event order):\n{}\n",
             lines.join("\n")
         ));
+    }
+    // attribution contrast: which subjects hold facts on this question's
+    // topic, and which question-mentioned parties hold none — the zero
+    // count is the misattribution signal ("gift to Melanie" when the
+    // story is Caroline's shows Melanie: 0)
+    {
+        let qt = tokens3(question);
+        let mut holders: BTreeMap<String, usize> = BTreeMap::new();
+        let mut subjects: Vec<String> = Vec::new();
+        for key in m.engine.relation_keys("current") {
+            if key.len() != 3 {
+                continue;
+            }
+            let subj = m.engine.interner.display(&key[0]).to_string();
+            if !subjects.contains(&subj) {
+                subjects.push(subj.clone());
+            }
+            let line = format!(
+                "{} --{}--> {}",
+                subj,
+                m.engine.interner.display(&key[1]),
+                m.engine.interner.display(&key[2])
+            );
+            if topic_overlap(&tokens3(&line), &subj, &qt) >= 1 {
+                *holders.entry(subj).or_insert(0) += 1;
+            }
+        }
+        // question-mentioned parties (by subject-name token match)
+        let asked: Vec<String> = subjects
+            .iter()
+            .filter(|s| {
+                let st = tokens3(s);
+                st.iter().any(|t| t.len() >= 3 && qt.contains(t))
+            })
+            .cloned()
+            .collect();
+        let zero: Vec<String> = asked
+            .iter()
+            .filter(|s| !holders.contains_key(*s))
+            .cloned()
+            .collect();
+        if !holders.is_empty() || !zero.is_empty() {
+            let mut sec = String::from(
+                "\nATTRIBUTION (who holds facts on this question's topic, by subject):\n",
+            );
+            let mut pairs: Vec<_> = holders.iter().collect();
+            pairs.sort_by(|a, b| b.1.cmp(a.1));
+            for (s, n) in pairs.iter().take(6) {
+                sec.push_str(&format!("  {s}: {n} topic facts\n"));
+            }
+            if !zero.is_empty() {
+                sec.push_str(&format!(
+                    "  NO topic facts for: {} (mentioned in the question)\n",
+                    zero.join(", ")
+                ));
+            }
+            base.push_str(&sec);
+        }
     }
     // date facts with precomputed differences: the reader reliably states
     // both dates and then fails to subtract — the engine owns the

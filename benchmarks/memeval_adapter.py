@@ -107,9 +107,20 @@ def run(
         ).stdout
         answer = _reader(client, llm_model, question, ctx)
         if answer and _is_refusal(answer):
-            # deliberate abstention is final — re-reading the transcript
-            # with the question in hand only manufactures evidence
-            return answer
+            # retry once when the store genuinely holds topic evidence:
+            # the check matches relation/object content (not subject
+            # names), so misattributed premises fail it and stay refused
+            ev = subprocess.run(
+                [BIN, "hasevidence", str(snap), question],
+                capture_output=True, text=True,
+            ).stdout
+            if ev.strip():
+                answer = _reader(
+                    client, llm_model, question,
+                    ctx + "\nVERIFIED FACTS FROM MEMORY on this question's topic "
+                    "(the subject HAS facts in the store — answer from them if "
+                    "they are about the person the question asks about):\n" + ev,
+                )
         if not answer:
             # structured store had nothing: one targeted re-read of the
             # most relevant source episodes
