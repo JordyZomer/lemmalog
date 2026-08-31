@@ -75,7 +75,8 @@ impl Engine {
         }
         self.clauses.extend(clauses);
         self.check_program()?;
-        let id = format!("b{}", self.rule_batches.len());
+        let id = format!("b{}", self.batch_counter);
+        self.batch_counter += 1;
         self.rule_batches
             .push((id.clone(), src.to_string(), self.clauses.len()));
         self.program_dirty = true;

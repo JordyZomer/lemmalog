@@ -344,6 +344,10 @@ pub struct Engine {
     pub feed: Vec<Change>,
     /// Rule registry: (batch id, source, clause range end).
     pub rule_batches: Vec<(String, String, usize)>,
+    /// Monotonic batch id source: `rule_batches.len()` would collide
+    /// after an uninstall + install in one session (two live batches
+    /// sharing an id makes `uninstall` target the wrong one).
+    pub batch_counter: usize,
     /// Set when the program changed since the last run; the next `run()`
     /// clears and rebuilds every derived relation (backfill).
     pub program_dirty: bool,
@@ -380,6 +384,7 @@ impl Engine {
             change_log: Vec::new(),
             feed: Vec::new(),
             rule_batches: Vec::new(),
+            batch_counter: 0,
             program_dirty: true,
             ever_derived: BTreeSet::new(),
             last_run_log_len: 0,

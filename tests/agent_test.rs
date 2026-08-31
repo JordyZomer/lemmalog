@@ -359,3 +359,22 @@ fn snapshot_preserves_rules_installed_after_construction() {
     m2.maintain(200);
     assert!(m2.ask("reports_to(\"alice\", Y)").unwrap().is_empty());
 }
+
+#[test]
+fn batch_ids_never_collide_across_uninstall() {
+    let mut m = AgentMemory::<MockExtractor>::new(MockExtractor::new(0.9), "").unwrap();
+    // agent installs two batches, uninstalls the first, installs another:
+    // with ids derived from rule_batches.len() the new batch would reuse
+    // b2 while the original b2 is still live, and uninstall("b2") would
+    // then target whichever batch position() finds first
+    let b1 = m.install_rules("r1(X, Y) :- current(X, \"knows\", Y).").unwrap();
+    let b2 = m.install_rules("r2(X, Y) :- current(X, \"likes\", Y).").unwrap();
+    assert!(m.uninstall_rules(&b1));
+    let b3 = m.install_rules("r3(X, Y) :- current(X, \"owns\", Y).").unwrap();
+    assert_ne!(b2, b3, "new batch id must not collide with a live batch");
+    // uninstall by id after the churn removes exactly the batch asked for
+    assert!(m.uninstall_rules(&b2));
+    let remaining: Vec<String> = m.rule_batches().into_iter().map(|(id, _)| id).collect();
+    assert!(!remaining.contains(&b2), "{remaining:?}");
+    assert!(remaining.contains(&b3), "{remaining:?}");
+}
