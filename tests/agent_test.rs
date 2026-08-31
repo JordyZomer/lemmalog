@@ -293,3 +293,69 @@ fn observe_extracted_applies_policy_and_reports_drops() {
         vec!["O=acme".to_string()]
     );
 }
+
+#[test]
+fn source_references_are_valid_entities() {
+    use lemmalog::agent::parse_protocol_reported;
+    let (facts, dropped) = parse_protocol_reported(
+        "sketch_mode --located--> src/features/sketchMode/bind.ts\n\
+         entity_token_problem --defined_at--> src/agent.rs:92\n\
+         parser --tracked_by--> JordyZomer/lemmalog#12\n\
+         sketch_mode --depends_on--> engine_scene",
+        1.0,
+    );
+    assert_eq!(facts.len(), 4, "dropped: {dropped:?}");
+    assert!(dropped.is_empty(), "{dropped:?}");
+    assert_eq!(facts[1].obj, "src/agent.rs:92");
+}
+
+#[test]
+fn punctuation_with_spaces_is_still_prose() {
+    use lemmalog::agent::parse_protocol_reported;
+    let (facts, dropped) = parse_protocol_reported(
+        "thing --located--> see src/agent.rs, around line 118\n\
+         thing --noted--> Yes. Confirmed.",
+        1.0,
+    );
+    assert!(facts.is_empty(), "{facts:?}");
+    assert_eq!(dropped.len(), 2);
+    assert!(
+        dropped.iter().all(|(_, r)| r.contains("prose")),
+        "{dropped:?}"
+    );
+}
+
+#[test]
+fn snapshot_preserves_rules_installed_after_construction() {
+    let dir = std::env::temp_dir().join("lemmalog-test-batches");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mem.snapshot");
+    let path = path.to_str().unwrap();
+
+    // Nothing in the constructor: this is how the MCP server runs.
+    let mut m = mem("");
+    m.observe_at("alice --manager--> bob\nbob --manager--> carol", 100);
+    let b = m
+        .install_rules(
+            "reports_to(X, Y) :- current(X, \"manager\", Y).\n\
+             reports_to(X, Z) :- reports_to(X, Y), reports_to(Y, Z).",
+        )
+        .unwrap();
+    m.maintain(100);
+    assert_eq!(m.ask("reports_to(\"alice\", Y)").unwrap().len(), 2);
+
+    m.save(path).unwrap();
+    let mut m2 = AgentMemory::load(MockExtractor::new(0.9), path).unwrap();
+
+    assert_eq!(
+        m2.ask("reports_to(\"alice\", Y)").unwrap(),
+        vec!["Y=bob".to_string(), "Y=carol".to_string()],
+        "an installed rule batch must survive a reload"
+    );
+    // batch identity survives, so uninstall still targets the same batch
+    let ids: Vec<String> = m2.rule_batches().into_iter().map(|(i, _)| i).collect();
+    assert!(ids.contains(&b), "batch {b} missing from {ids:?}");
+    assert!(m2.uninstall_rules(&b));
+    m2.maintain(200);
+    assert!(m2.ask("reports_to(\"alice\", Y)").unwrap().is_empty());
+}

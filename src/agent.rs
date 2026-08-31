@@ -107,9 +107,15 @@ fn entity_token_problem(s: &str) -> Option<String> {
         Some("looks like prose (more than 8 words) — entity names are short".to_string())
     } else if !s
         .chars()
-        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '\'' | ' '))
+        .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '\'' | ' ' | '/' | '.' | ':' | '#'))
     {
-        Some("contains punctuation or prose characters — entity names use letters, digits, '_', '-', apostrophes".to_string())
+        Some("contains punctuation or prose characters — entity names use letters, digits, '_', '-', apostrophes, and '/', '.', ':', '#' in source references".to_string())
+    } else if s.contains(' ') && s.chars().any(|c| matches!(c, '/' | '.' | ':' | '#')) {
+        // Path characters are allowed so that source references
+        // (`src/agent.rs:118`) can be entities, but only as single tokens:
+        // punctuation *plus* spaces is the signature of leaked prose, which
+        // is exactly what strict validation exists to drop.
+        Some("looks like prose — source references must not contain spaces (`src/agent.rs:118`, not `see src/agent.rs, line 118`)".to_string())
     } else {
         None
     }
@@ -764,6 +770,8 @@ fn unesc(s: &str) -> String {
 }
 
 const SNAPSHOT_MAGIC: &str = "LEMMALOG1";
+/// The batch `new()` installs from `DEFAULT_RULES`; never persisted.
+const BOOTSTRAP_BATCH: &str = "b0";
 /// Pre-rename snapshots (read-only compatibility).
 const SNAPSHOT_MAGIC_V0: &str = "CORTEXLOG1";
 
@@ -778,6 +786,18 @@ impl<X: Extractor> AgentMemory<X> {
         let _ = writeln!(out, "{SNAPSHOT_MAGIC}");
         let _ = writeln!(out, "NOW\t{}", self.engine.now);
         let _ = writeln!(out, "RULES\t{}", esc(&self.extra_rules));
+        // Batches installed after construction (`install_rules`) are not in
+        // `extra_rules`, so persisting only that field drops every rule an
+        // agent installed — silently, since base facts still load and the
+        // derived views simply come back empty. Batch ids are positional
+        // (`b{len}`), so replaying non-bootstrap batches in order restores
+        // them under the same ids and `uninstall` keeps working.
+        for (id, src) in self.engine.batches() {
+            if id == BOOTSTRAP_BATCH {
+                continue; // reinstalled by `new()` from DEFAULT_RULES
+            }
+            let _ = writeln!(out, "RULEB\t{}\t{}", esc(&id), esc(&src));
+        }
         for ep in &self.episodes {
             let _ = writeln!(
                 out,
@@ -832,6 +852,7 @@ impl<X: Extractor> AgentMemory<X> {
             return Err("not a lemmalog snapshot".into());
         }
         let mut rules = String::new();
+        let mut batch_srcs: Vec<String> = Vec::new();
         let mut now = 0i64;
         let mut episodes = Vec::new();
         let mut escalations = Vec::new();
@@ -843,6 +864,13 @@ impl<X: Extractor> AgentMemory<X> {
             match tag {
                 "NOW" => now = rest.parse()?,
                 "RULES" => rules = unesc(rest),
+                "RULEB" => {
+                    let mut f = rest.splitn(2, '\t');
+                    let (Some(_id), Some(src)) = (f.next(), f.next()) else {
+                        return Err("bad RULEB record".into());
+                    };
+                    batch_srcs.push(unesc(src));
+                }
                 "EP" => {
                     let mut f = rest.splitn(4, '\t');
                     let (Some(id), Some(ts), Some(speaker), Some(txt)) =
@@ -889,7 +917,19 @@ impl<X: Extractor> AgentMemory<X> {
                 _ => {}
             }
         }
-        let mut m = AgentMemory::new(extractor, &rules)?;
+        let mut m = if batch_srcs.is_empty() {
+            // Legacy snapshot (or nothing installed past the bootstrap).
+            AgentMemory::new(extractor, &rules)?
+        } else {
+            // `extra_rules` became a batch at construction, so it is already
+            // in `batch_srcs`; passing it again would install it twice.
+            let mut m = AgentMemory::new(extractor, "")?;
+            for src in &batch_srcs {
+                m.engine.install_program(src)?;
+            }
+            m.extra_rules = rules;
+            m
+        };
         m.escalations = escalations;
         m.episodes = episodes;
         m.episode_counter = m.episodes.len() as u64;
