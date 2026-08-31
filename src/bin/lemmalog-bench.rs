@@ -58,7 +58,7 @@ fn main() {
             );
             let mut m = AgentMemory::load(MockExtractor::new(0.9), snap).expect("load snapshot");
             let _ = m.maintain(m.engine.now);
-            for l in evidence_lines(&m, question) {
+            for l in evidence_lines(&m, snap, question) {
                 println!("{l}");
             }
         }
@@ -445,10 +445,21 @@ fn topic_overlap(line_tokens: &std::collections::BTreeSet<String>, subj: &str, q
 
 /// Facts whose relation/object content matches the question (excluding
 /// the subject name). Backs the refusal-retry: a retry is only offered
-/// when the store genuinely holds topic evidence.
-fn evidence_lines(m: &AgentMemory<MockExtractor>, question: &str) -> Vec<String> {
+/// when the store genuinely holds topic evidence. Lexical overlap OR
+/// embedding cosine — "kitchen gadget" has no lexical bridge to
+/// "Instant Pot", but the semantic half finds it.
+fn evidence_lines(m: &AgentMemory<MockExtractor>, snap: &str, question: &str) -> Vec<String> {
     let qt = tokens3(question);
-    let mut scored: Vec<(usize, String)> = Vec::new();
+    let mut scored: Vec<(f64, String)> = Vec::new();
+    // semantic half: reuse the per-snapshot embedding cache if present
+    let embeds: std::collections::HashMap<String, Vec<f32>> = std::fs::read_to_string(format!("{snap}.embed.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let qvec = embed_base().map(|b| {
+        let e = lemmalog::llm::HttpEmbedder::new(&b, "text-embedding-nomic-embed-text-v1.5");
+        e.embed(question)
+    });
     for key in m.engine.relation_keys("current") {
         if key.len() != 3 {
             continue;
@@ -461,11 +472,33 @@ fn evidence_lines(m: &AgentMemory<MockExtractor>, question: &str) -> Vec<String>
             m.engine.interner.display(&key[2])
         );
         let ov = topic_overlap(&tokens3(&line), &subj, &qt);
-        if ov >= 2 {
-            scored.push((ov, line));
+        // the embedding cache is keyed by render_fact format — the same
+        // fact as Retrieval indexes it
+        let render_line = format!(
+            "current({}, {}, {})",
+            subj,
+            m.engine.interner.display(&key[1]),
+            m.engine.interner.display(&key[2])
+        );
+        let sem = match (&qvec, embeds.get(&render_line)) {
+            (Some(q), Some(v)) if !q.is_empty() && !v.is_empty() => {
+                let mut c = lemmalog::semantics::cosine_pub(v, q) as f64;
+                // the question asks about the user's own state; assistant
+                // recommendations and third parties rank below first-person
+                // facts at the same similarity
+                if subj == "the_user" {
+                    c += 0.15;
+                }
+                c
+            }
+            _ => 0.0,
+        };
+        let score = if ov >= 2 { 2.0 + ov as f64 } else { sem };
+        if ov >= 2 || sem > 0.45 {
+            scored.push((score, line));
         }
     }
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut out: Vec<String> = Vec::new();
     for (_, l) in scored {
         if out.len() >= 12 {
@@ -518,6 +551,11 @@ fn count_section(m: &mut AgentMemory<MockExtractor>, question: &str) -> String {
         }
     }
     for r in &numeric_rels {
+        // summing stated counts/totals is meaningless — they are already
+        // aggregates; only true amounts (price, spent, ...) sum
+        if r.contains("count") || r.contains("total") || r.contains("number") {
+            continue;
+        }
         let safe = r.replace('/', "_");
         sum_rules.push_str(&format!(
             "sum_{safe}(S, sum(N)) :- numeric(S, \"{r}\", N).\n"
@@ -597,8 +635,48 @@ fn count_section(m: &mut AgentMemory<MockExtractor>, question: &str) -> String {
                         merged.push(mem.clone());
                     }
                 }
+                // consumed members: an item added to a set and later
+                // watched/read/sold/removed is not current membership —
+                // "to-watch list" counts what is still pending
+                const CONSUMED: [&str; 10] = [
+                    "watched", "read", "finished", "sold", "removed",
+                    "gave", "donated", "completed", "returned", "cancel",
+                ];
+                let consumed: Vec<String> = merged
+                    .iter()
+                    .filter(|mem| {
+                        let mt = tokens3(mem);
+                        m.engine.relation_keys("current").iter().any(|k| {
+                            if k.len() != 3 {
+                                return false;
+                            }
+                            let rel = m.engine.interner.display(&k[1]).to_lowercase();
+                            if !CONSUMED.iter().any(|c| rel.contains(c)) {
+                                return false;
+                            }
+                            let obj_toks = tokens3(&m.engine.interner.display(&k[2]));
+                            mt.iter().any(|t| obj_toks.contains(t))
+                        })
+                    })
+                    .cloned()
+                    .collect();
                 let n_raw = key[1].as_int().unwrap_or(0);
-                if merged.len() > 1 && (merged.len() as i64) < n_raw {
+                let current_est = merged.len().saturating_sub(consumed.len());
+                if !consumed.is_empty() && current_est > 0 {
+                    out.push_str(&format!(
+                        "{line} — {} extracted, {} already consumed (watched/read/sold/…), current membership ≈ {}: {}\n",
+                        n_raw,
+                        consumed.len(),
+                        current_est,
+                        merged
+                            .iter()
+                            .filter(|x| !consumed.contains(x))
+                            .take(10)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ));
+                } else if merged.len() > 1 && (merged.len() as i64) < n_raw {
                     out.push_str(&format!(
                         "{line} — extracted as {} rows, {} distinct after merging name variants: {}\n",
                         n_raw,
@@ -663,6 +741,37 @@ fn count_section(m: &mut AgentMemory<MockExtractor>, question: &str) -> String {
         }
     }
     count_lines += sum_lines;
+    // stated counts: the transcript itself often says "my list has 20
+    // items" — extracted as a numeric fact, it is the most direct
+    // evidence for how-many questions; latest assertion wins
+    {
+        let mut stated: Vec<(i64, String)> = Vec::new();
+        for key in m.engine.relation_keys("edge") {
+            if key.len() != 6 {
+                continue;
+            }
+            let rel = m.engine.interner.display(&key[1]).to_lowercase();
+            if !(rel.contains("count") || rel.contains("total") || rel.contains("number")) {
+                continue;
+            }
+            let obj = m.engine.interner.display(&key[2]).to_string();
+            if !obj.chars().all(|c| c.is_ascii_digit()) || obj.is_empty() {
+                continue;
+            }
+            let ts = key[5].as_int().unwrap_or(0);
+            let rel_disp = m.engine.interner.display(&key[1]).to_string();
+            let shares = tokens3(&rel_disp).iter().any(|t| t.len() >= 3 && qtokens.contains(t));
+            if !shares {
+                continue;
+            }
+            stated.push((ts, format!("stated {} = {}", rel_disp, obj)));
+        }
+        stated.sort_by(|a, b| b.0.cmp(&a.0));
+        if let Some((_, latest)) = stated.first() {
+            out.push_str(&format!("{latest} (latest stated value)\n"));
+            count_lines += 1;
+        }
+    }
     if count_lines == 0 {
         out.clear(); // no counts: the section is omitted entirely
     }
@@ -1035,9 +1144,68 @@ fn context(snap: &str, question: &str) -> String {
             base.push_str(&sec);
         }
     }
+    // current-state latest values: when a slot (subject + relation) holds
+    // several open values, the newest by valid_from is the current one —
+    // render the supersession explicitly so "what is my current X"
+    // questions don't drown in history
+    if q_lower.contains("current") || q_lower.contains(" now") || q_lower.contains("latest") {
+        let qt_cur = tokens3(question);
+        let mut slots: BTreeMap<(String, String), Vec<(i64, String)>> = BTreeMap::new();
+        for key in m.engine.relation_keys("edge") {
+            if key.len() != 6 {
+                continue;
+            }
+            let subj = m.engine.interner.display(&key[0]).to_string();
+            let rel = m.engine.interner.display(&key[1]).to_string();
+            let line = format!("{subj} --{rel}--> {}", m.engine.interner.display(&key[2]));
+            // only slots the question touches
+            if !tokens3(&line).iter().any(|t| t.len() >= 3 && qt_cur.contains(t)) {
+                continue;
+            }
+            let vf = key[3].as_int().unwrap_or(0);
+            if vf == i64::MAX {
+                continue;
+            }
+            slots
+                .entry((subj, rel))
+                .or_default()
+                .push((vf, m.engine.interner.display(&key[2]).to_string()));
+        }
+        let mut sec = String::from(
+            "\nCURRENT STATE (latest value per slot; superseded values listed as history):\n",
+        );
+        let mut lines = 0;
+        for ((subj, rel), mut vals) in slots {
+            if lines >= 8 {
+                break;
+            }
+            vals.sort_by(|a, b| b.0.cmp(&a.0));
+            let distinct: Vec<String> = vals
+                .iter()
+                .map(|(_, v)| v.clone())
+                .fold(Vec::new(), |mut acc: Vec<String>, v| {
+                    if !acc.contains(&v) {
+                        acc.push(v);
+                    }
+                    acc
+                });
+            if distinct.len() < 2 {
+                continue;
+            }
+            let newest = &distinct[0];
+            let older: Vec<String> = distinct.iter().skip(1).take(3).cloned().collect();
+            sec.push_str(&format!(
+                "  {subj} --{rel}--> {newest} (current; superseded: {})\n",
+                older.join(", ")
+            ));
+            lines += 1;
+        }
+        if lines > 0 {
+            base.push_str(&sec);
+        }
+    }
     base
 }
-
 /// Recall fallback: when the memory lacks the answer, run ONE targeted
 /// extraction pass over the BM25-top episodes WITH the question in the
 /// prompt — the question tells the extractor exactly what to hunt for.
