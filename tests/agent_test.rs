@@ -499,3 +499,21 @@ fn functional_relations_supersede_and_multi_accumulate_silently() {
     m.maintain(300);
     assert_eq!(m.ask("current(\"hyp_1\", \"evidence\", E)").unwrap().len(), 2);
 }
+
+#[test]
+fn quoted_objects_parse_to_clean_symbols() {
+    // issue report: models habitually quote multi-word claims; the
+    // protocol had no quoting, so '"mean"' landed as a symbol WITH
+    // literal quotes and quoted spaced phrases died as prose
+    let facts = "hyp_1 --hypothesis--> \"mean field swaps mu and nu\"\n\
+                 \"Caroline\" --paints--> lake sunrise\n\
+                 hyp_1 --status--> 'supported'";
+    let parsed = lemmalog::agent::parse_protocol_strict(facts, 0.9);
+    assert_eq!(parsed.len(), 3, "{parsed:?}");
+    assert_eq!(parsed[0].obj, "mean field swaps mu and nu");
+    assert_eq!(parsed[1].subj, "Caroline");
+    assert!(!parsed[0].obj.contains('"'));
+    // unbalanced quotes stay what they are and die as prose
+    let bad = "hyp_1 --hypothesis--> \"unclosed claim about things";
+    assert!(lemmalog::agent::parse_protocol_strict(bad, 0.9).is_empty());
+}

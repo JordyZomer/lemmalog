@@ -177,10 +177,24 @@ fn parse_line(raw: &str, default_confidence: f64) -> Result<CandidateFact, Strin
     if rel.is_empty() {
         return Err("empty relation".to_string());
     }
+    // models habitually quote multi-word phrases; the protocol has no
+    // quoting, so symmetric quotes become part of the symbol ("mean" ≠
+    // mean). Strip them at the parse boundary.
+    let unquote = |t: &str| -> String {
+        let t = t.trim();
+        if t.len() >= 2
+            && ((t.starts_with('"') && t.ends_with('"'))
+                || (t.starts_with('\'') && t.ends_with('\'')))
+        {
+            t[1..t.len() - 1].trim().to_string()
+        } else {
+            t.to_string()
+        }
+    };
     Ok(CandidateFact {
-        subj: s.trim().to_string(),
+        subj: unquote(s),
         pred: rel.to_string(),
-        obj: o.trim().to_string(),
+        obj: unquote(o),
         confidence: conf,
     })
 }

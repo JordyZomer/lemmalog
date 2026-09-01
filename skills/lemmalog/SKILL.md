@@ -117,7 +117,9 @@ decision_7 --decision--> chose scope X because Y
 
 Evidence objects take a bare source reference (space-free) or a
 punctuation-free phrase; spaces plus punctuation read as leaked prose
-and are dropped.
+and are dropped. Symmetric quotes around subjects/objects are stripped
+(`"mean field"` lands as `mean field`) — multi-word values are fine up
+to 8 words; compress longer prose into a short name or split it.
 
 ## State that changes
 
