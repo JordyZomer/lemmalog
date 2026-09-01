@@ -487,7 +487,7 @@ fn evidence_lines(m: &AgentMemory<MockExtractor>, snap: &str, question: &str) ->
                 // recommendations and third parties rank below first-person
                 // facts at the same similarity
                 if subj == "the_user" {
-                    c += 0.15;
+                    c += 0.25;
                 }
                 c
             }
@@ -1147,8 +1147,19 @@ fn context(snap: &str, question: &str) -> String {
     // current-state latest values: when a slot (subject + relation) holds
     // several open values, the newest by valid_from is the current one —
     // render the supersession explicitly so "what is my current X"
-    // questions don't drown in history
-    if q_lower.contains("current") || q_lower.contains(" now") || q_lower.contains("latest") {
+    // questions don't drown in history. Value-shaped questions
+    // (amount/price/how much) get it too: picking the wrong one of two
+    // open amounts is the classic knowledge-update failure
+    if q_lower.contains("current")
+        || q_lower.contains(" now")
+        || q_lower.contains("latest")
+        || q_lower.contains("amount")
+        || q_lower.contains("price")
+        || q_lower.contains("how much")
+        || q_lower.contains("cost")
+        || q_lower.contains("value")
+        || q_lower.contains("update")
+    {
         let qt_cur = tokens3(question);
         let mut slots: BTreeMap<(String, String), Vec<(i64, String)>> = BTreeMap::new();
         for key in m.engine.relation_keys("edge") {
@@ -1192,10 +1203,25 @@ fn context(snap: &str, question: &str) -> String {
             if distinct.len() < 2 {
                 continue;
             }
-            let newest = &distinct[0];
-            let older: Vec<String> = distinct.iter().skip(1).take(3).cloned().collect();
+            // newest value with its date, older values with theirs —
+            // event-anchored questions ("when I got the mortgage") match
+            // by date
+            let date_of = |ts: i64| -> String {
+                dates
+                    .get(&ts.to_string())
+                    .cloned()
+                    .unwrap_or_else(|| ts.to_string())
+            };
+            let newest_ts = vals.iter().find(|(_, v)| v == &distinct[0]).map(|(t, _)| *t).unwrap_or(0);
+            let mut older: Vec<String> = distinct.iter().skip(1).take(3).map(|v| {
+                let ts = vals.iter().find(|(_, x)| x == v).map(|(t, _)| *t).unwrap_or(0);
+                format!("{v} (as of {})", date_of(ts))
+            }).collect();
+            let _ = &mut older;
             sec.push_str(&format!(
-                "  {subj} --{rel}--> {newest} (current; superseded: {})\n",
+                "  {subj} --{rel}--> {} (as of {}; superseded: {})\n",
+                distinct[0],
+                date_of(newest_ts),
                 older.join(", ")
             ));
             lines += 1;

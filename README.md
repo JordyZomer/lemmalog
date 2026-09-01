@@ -301,7 +301,7 @@ are F1 on their leaderboard.
 System              F1 (answer tokens)
 PropMem (pub)        0.550   (23.1M all-phase)
 SimpleMem (pub)      0.480   (20.8M all-phase)
-lemmalog             0.483 ± 0.007 (3 runs)  (491K answer-phase)
+lemmalog             0.487 ± 0.011 (3 runs)  (500K answer-phase)
 OpenClaw (pub)       0.244   ( 0.7M)
 fullcontext (ours)   0.197   (10.6M)
 fullcontext (pub)    0.222   (10.6M)
@@ -312,7 +312,7 @@ Binary accuracy 0.566 ± 0.009 (3 runs, gpt-4o judge). Per-category
 
 ```
 Single-Session User         0.919 / 0.941
-Knowledge Update            0.463 / 0.647
+Knowledge Update            0.497 ± 0.003 / 0.706
 Single-Session Assistant    0.649 / 0.882
 Temporal Reasoning          0.410 / 0.412
 Multi-Session               0.365 / 0.412
@@ -321,7 +321,7 @@ Single-Session Preference   0.116 / 0.235
 
 Reading it honestly:
 
-- **F1 0.483 ± 0.007 (3 runs) — 2.4x our own full-context run (0.197)**
+- **F1 0.487 ± 0.011 (3 runs, best single run 0.502) — 2.5x our own full-context run (0.197)**
   — past SimpleMem's published 0.480, at 1/21st the
   answer-phase tokens. PropMem (0.550) still ahead.
 - **The improvement arc is the story**: the first configuration scored
@@ -339,13 +339,18 @@ Reading it honestly:
   facts competing for the same context budget starves selection. Scaling
   the budget (1800 → 3200) recovered it. Selection, not
   extraction, is the binding constraint on this benchmark.
-- **Knowledge-update recovered** (0.405 → 0.463): the regression was
-  evolving-set counts, not stale values — "how many titles on my
-  to-watch list" counted everything ever added. The count section now
-  subtracts consumed members (watched/read/sold/…), surfaces the latest
-  STATED count when the transcript gives one, and current-state
-  questions get a latest-value-per-slot section with supersessions
-  listed as history.
+- **Knowledge-update recovered** (0.405 → 0.497 ± 0.003): the
+  regression was evolving-set counts, not stale values — "how many
+  titles on my to-watch list" counted everything ever added. The count
+  section now subtracts consumed members (watched/read/sold/…),
+  surfaces the latest STATED count when the transcript gives one, and
+  value-shaped questions get a dated latest-value-per-slot section with
+  supersessions as history. A reader clause also distinguishes temporal
+  anchors ("before I got X") from genuine misattribution. A further
+  extraction prompt (scalar-fidelity + anchor-item instructions) was
+  tried and REVERTED: it restored KU to 0.587 but crashed temporal
+  (0.39 → 0.20) and single-session recall — prompt length dilutes date
+  extraction. Documented as the extraction prompt's known trade-off.
 - **Token economics**: ~4.6K answer-phase tokens per question vs ~104K
   for full context (22x); extraction is paid once per conversation
   (~$0.25 Sonnet, cached forever) and amortizes across every additional
@@ -408,7 +413,7 @@ retry guard refuses to manufacture evidence for them. Multi-hop 0.615
 now beats PropMem's 0.599.
 
 Two benchmark rows, both on their standardized harnesses, both with
-repeated measures: LongMemEval F1 0.483 ± 0.007 / accuracy 0.575 ± 0.012
+repeated measures: LongMemEval F1 0.487 ± 0.011 / accuracy 0.585 ± 0.005
 (at 1/22nd the tokens) and LoCoMo F1 0.573 ± 0.002 (2nd of 10). The
 consistent pattern: competitive with the leaders on structure-rewarding
 categories, ahead of every retrieval-first system, behind PropMem
