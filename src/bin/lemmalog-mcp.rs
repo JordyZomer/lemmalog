@@ -59,7 +59,8 @@ fn main() {
             "initialize" => Ok(json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "lemmalog", "version": "0.1.0"}
+                "serverInfo": {"name": "lemmalog", "version": "0.1.0"},
+                "instructions": SERVER_INSTRUCTIONS
             })),
             "tools/list" => Ok(json!({"tools": tools()})),
             "tools/call" => {
@@ -84,52 +85,81 @@ fn main() {
 fn tools() -> J {
     json!([
         tool("lemmalog_observe",
-            "Assert facts into memory (host model does extraction). Input: facts in the line protocol 'S --rel[conf]--> O', one per line; optional ts integer (default: engine clock). Example: 'Alice --works_at--> Acme\\nBob --manager--> Carol'."),
+            "Assert facts into memory (host model does extraction). Input: facts in the line protocol 'S --rel[conf]--> O', one per line; optional ts integer (default: engine clock). Example: 'Alice --works_at--> Acme\\nBob --manager--> Carol'.", &["facts", "ts"], &["facts"]),
         tool("lemmalog_retract",
-            "Retract facts that turned out to be WRONG (line protocol, same as observe). Open matching rows are removed and invalidation propagates: the response reports which derived facts died as a consequence. For a value that merely CHANGED, prefer re-asserting the same relation (the update policy supersedes)."),
+            "Retract facts that turned out to be WRONG (line protocol, same as observe). Open matching rows are removed and invalidation propagates: the response reports which derived facts died as a consequence. For a value that merely CHANGED, prefer re-asserting the same relation (the update policy supersedes).", &["facts"], &["facts"]),
         tool("lemmalog_query",
-            "Query derived memory: a goal atom like 'reports_to(\"Alice\", Y)' or 'current(X, works_at, O)'. Returns variable bindings. Read-only."),
+            "Query derived memory: a goal atom like 'reports_to(\"Alice\", Y)' or 'current(X, works_at, O)'. Returns variable bindings. Read-only.", &["goal"], &["goal"]),
         tool("lemmalog_query_deep",
-            "Demand-driven query (magic sets) for exploratory points: same goal syntax as lemmalog_query."),
+            "Demand-driven query (magic sets) for exploratory points: same goal syntax as lemmalog_query.", &["goal"], &["goal"]),
         tool("lemmalog_why",
-            "Provenance proof tree for a ground fact like 'reports_to(Alice, Carol)' — which rules and source episodes produced it."),
+            "Provenance proof tree for a ground fact like 'reports_to(Alice, Carol)' — which rules and source episodes produced it.", &["fact"], &["fact"]),
         tool("lemmalog_install_rules",
-            "Install a Datalog rule batch (versioned, revertable). Input: rules text. Rules: 'head(X,Y) :- atom(X,Y), cmp.' with stratified negation (!atom), count/min/max/sum aggregates in heads, now(T) builtin."),
+            "Install a Datalog rule batch (versioned, revertable). Input: rules text. Rules: 'head(X,Y) :- atom(X,Y), cmp.' with stratified negation (!atom), count/min/max/sum aggregates in heads, now(T) builtin.", &["rules"], &["rules"]),
         tool("lemmalog_uninstall",
-            "Uninstall a rule batch by id (see lemmalog_batches). Derivations revert."),
-        tool("lemmalog_batches", "List installed rule batches."),
+            "Uninstall a rule batch by id (see lemmalog_batches). Derivations revert.", &["id"], &["id"]),
+        tool("lemmalog_batches", "List installed rule batches.", &[], &[]),
         tool("lemmalog_what_if",
-            "Hypothetical: 'what would follow if these facts were true?' Input: facts (line protocol) + goal atom. Store is untouched."),
+            "Hypothetical: 'what would follow if these facts were true?' Input: facts (line protocol) + goal atom. Store is untouched.", &["facts", "goal"], &["facts", "goal"]),
         tool("lemmalog_canonicalize",
-            "Entity resolution: asserts alias edges (line protocol 'local --alias_of[conf]--> canonical'), installs the canonicalization rules and canonical views over current. Conflicts surface as alias_conflict facts."),
+            "Entity resolution: asserts alias edges (line protocol 'local --alias_of[conf]--> canonical'), installs the canonicalization rules and canonical views over current. Conflicts surface as alias_conflict facts.", &["facts"], &["facts"]),
         tool("lemmalog_context",
-            "Query-driven context assembly via hybrid retrieval: BM25 over facts and episodes + entity-match boosting, budget-aware. Input: query (natural language) + optional budget_tokens (default 1000). Returns relevance-selected facts and their verbatim source episodes — use this instead of lemmalog_dump when preparing a grounded answer."),
-        tool("lemmalog_dump", "List facts of a predicate (or all) with confidence and provenance."),
+            "Query-driven context assembly via hybrid retrieval: BM25 over facts and episodes + entity-match boosting, budget-aware. Input: query (natural language) + optional budget_tokens (default 1000). Returns relevance-selected facts and their verbatim source episodes — use this instead of lemmalog_dump when preparing a grounded answer.", &["query", "budget_tokens"], &["query"]),
+        tool("lemmalog_dump", "List facts of a predicate (or all) with confidence and provenance.", &["pred"], &[]),
         tool("lemmalog_changes",
-            "Resync after a context reset or another agent's work: everything asserted, derived, or retracted since an epoch. Input: optional `since` epoch integer (default: 0 = everything, capped). The response carries the current epoch — checkpoint it and pass it back next time."),
-        tool("lemmalog_save", "Persist memory to LEMMALOG_MCP_PATH."),
-        tool("lemmalog_run", "Run one maintenance epoch (usually automatic)."),
+            "Resync after a context reset or another agent's work: everything asserted, derived, or retracted since an epoch. Input: optional `since` epoch integer (default: 0 = everything, capped). The response carries the current epoch — checkpoint it and pass it back next time.", &["since"], &[]),
+        tool("lemmalog_save", "Persist memory to LEMMALOG_MCP_PATH.", &[], &[]),
+        tool("lemmalog_run", "Run one maintenance epoch (usually automatic).", &[], &[]),
     ])
 }
 
-fn tool(name: &str, desc: &str) -> J {
+/// Sent on initialize; clients prepend it to the model's context. Small
+/// models never read the README — they read this.
+const SERVER_INSTRUCTIONS: &str = "\
+Lemmalog is your working memory: assert facts as you verify them \
+(S --rel[conf]--> O), derive with rules, and when a fact turns out \
+WRONG call lemmalog_retract (the response lists which conclusions \
+died). Asserted facts are queried as current(Subject, \"rel\", Object) \
+— querying rel(X, Y) directly returns nothing. For a changed value, \
+re-assert the same relation (old one supersedes). lemmalog_changes \
+with your last epoch resyncs you after context resets.";
+
+/// Property descriptions shared by the per-tool schemas (each tool
+/// advertises only the properties it actually takes — a model that sees
+/// `query` on lemmalog_observe will eventually pass it one).
+fn prop_desc(p: &str) -> &'static str {
+    match p {
+        "facts" => "line-protocol facts",
+        "goal" => "query atom",
+        "fact" => "ground fact",
+        "rules" => "rule program text",
+        "id" => "batch id",
+        "pred" => "predicate name",
+        "ts" => "timestamp",
+        "query" => "natural-language query",
+        "budget_tokens" => "context token budget",
+        "since" => "epoch checkpoint",
+        _ => "",
+    }
+}
+
+fn tool(name: &str, desc: &str, props: &[&str], required: &[&str]) -> J {
+    let properties: serde_json::Map<String, J> = props
+        .iter()
+        .map(|p| {
+            (
+                p.to_string(),
+                json!({"type": if *p == "ts" || *p == "budget_tokens" || *p == "since" { "integer" } else { "string" }, "description": prop_desc(p)}),
+            )
+        })
+        .collect();
     json!({
         "name": name,
         "description": desc,
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "facts": {"type": "string", "description": "line-protocol facts"},
-                "goal": {"type": "string", "description": "query atom"},
-                "fact": {"type": "string", "description": "ground fact"},
-                "rules": {"type": "string", "description": "rule program text"},
-                "id": {"type": "string", "description": "batch id"},
-                "pred": {"type": "string", "description": "predicate name"},
-                "ts": {"type": "integer", "description": "timestamp"},
-                "query": {"type": "string", "description": "natural-language query"},
-                "budget_tokens": {"type": "integer", "description": "context token budget"},
-                "since": {"type": "integer", "description": "epoch checkpoint"}
-            }
+            "properties": properties,
+            "required": required
         }
     })
 }
@@ -169,6 +199,50 @@ fn truncate(s: &str, n: usize) -> String {
     } else {
         let cut: String = s.chars().take(n).collect();
         format!("{cut}...")
+    }
+}
+
+/// Empty query results must redirect, not dead-end: the classic trap is
+/// querying the raw relation (`depends_on(X, Y)`) when asserted facts
+/// live under `current(S, rel, O)` — the answer is silently empty. Turn
+/// that into the hint that fixes the next call.
+fn empty_query_hint(e: &Engine, goal: &str) -> String {
+    let pred = goal.split('(').next().unwrap_or_default().trim();
+    if e.relations.contains_key(pred) {
+        return "(no answers — the relation exists but holds no rows; \
+check spelling of constant arguments, or run lemmalog_dump on it)"
+            .to_string();
+    }
+    // is `pred` used as a RELATION inside current? then the fact shape
+    // is the trap
+    for key in e.relation_keys("current") {
+        if key.len() == 3 && e.interner.display(&key[1]) == pred {
+            return format!(
+                "(no answers — `{pred}` is a RELATION, not a predicate: asserted \
+facts are current(S, rel, O). Try current(X, \"{pred}\", Y)"
+            );
+        }
+    }
+    // unknown predicate: closest names by shared stem
+    let stem = |s: &str| s.split('_').next().unwrap_or(s).to_lowercase();
+    let similar: Vec<String> = e
+        .relations
+        .keys()
+        .filter(|r| !r.starts_with("__") && stem(r) == stem(pred))
+        .cloned()
+        .take(5)
+        .collect();
+    if similar.is_empty() {
+        format!(
+            "(no answers — no relation named `{pred}`; asserted facts live \
+under current(S, rel, O), derived under their rule heads)"
+        )
+    } else {
+        format!(
+            "(no answers — no relation named `{pred}`; similar: {}. \
+Asserted facts live under current(S, rel, O)",
+            similar.join(", ")
+        )
     }
 }
 
@@ -306,7 +380,7 @@ fn tool_call(
             let goal = args["goal"].as_str().unwrap_or_default().to_string();
             match engine_of(state).ask(&goal) {
                 Ok(rows) => Ok(if rows.is_empty() {
-                    "(no answers)".to_string()
+                    empty_query_hint(engine_of(state), &goal)
                 } else {
                     rows.join("\n")
                 }),
@@ -320,7 +394,7 @@ fn tool_call(
             let goal = args["goal"].as_str().unwrap_or_default().to_string();
             match engine_of(state).ask_deep(&goal) {
                 Ok(rows) => Ok(if rows.is_empty() {
-                    "(no answers)".to_string()
+                    empty_query_hint(engine_of(state), &goal)
                 } else {
                     rows.join("\n")
                 }),
@@ -501,7 +575,40 @@ fn tool_call(
             let n = engine_of(state).run();
             Ok(format!("+{n} facts"))
         }
-        other => return Err(format!("unknown tool {other:?}")),
+        other => {
+            // models invent tool names; teach instead of rejecting —
+            // suggest the closest real tool so the next call succeeds
+            let known: Vec<&str> = [
+                "lemmalog_observe", "lemmalog_retract", "lemmalog_query",
+                "lemmalog_query_deep", "lemmalog_why", "lemmalog_install_rules",
+                "lemmalog_uninstall", "lemmalog_batches", "lemmalog_what_if",
+                "lemmalog_canonicalize", "lemmalog_context", "lemmalog_dump",
+                "lemmalog_changes", "lemmalog_save", "lemmalog_run",
+            ]
+            .to_vec();
+            let stripped = other.trim_start_matches("lemmalog_");
+            let close: Vec<&str> = known
+                .iter()
+                .filter(|t| {
+                    let b = t.trim_start_matches("lemmalog_");
+                    b.contains(stripped) || stripped.contains(b)
+                })
+                .copied()
+                .collect();
+            let hint = if close.is_empty() {
+                format!("unknown tool {other:?}; available: {}", known.join(", "))
+            } else {
+                format!(
+                    "unknown tool {other:?}; did you mean {}? available: {}",
+                    close.join(" or "),
+                    known.join(", ")
+                )
+            };
+            return Ok(json!({
+                "content": [{"type": "text", "text": hint}],
+                "isError": true
+            }));
+        }
     };
     let (text, is_error) = match inner {
         Ok(t) => (t, false),
@@ -521,4 +628,42 @@ fn tool_call(
         "content": [{"type": "text", "text": text}],
         "isError": is_error
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// "Count your tokens before you count your tools": the wire surface
+    /// every model pays for on every turn. Guard against drift into the
+    /// small-model failure mode (a 126-tool surface costs ~40K tokens;
+    /// ours should stay a small fraction of that — if this test fails,
+    /// split the server or move to meta-tools, don't just bump it).
+    #[test]
+    fn tool_surface_stays_under_budget() {
+        let wire = serde_json::to_string(&tools()).unwrap();
+        let est_tokens = wire.len() / 4; // chars-per-token lower bound
+        assert!(
+            est_tokens < 4500,
+            "tool surface ~{est_tokens} tokens ({} tools, {} bytes) — trim descriptions or consolidate",
+            tools().as_array().unwrap().len(),
+            wire.len()
+        );
+    }
+
+    #[test]
+    fn every_tool_schema_lists_only_its_own_properties() {
+        let ts = tools();
+        let list = ts.as_array().unwrap();
+        assert_eq!(list.len(), 15);
+        for t in list {
+            let props: Vec<&str> = t["inputSchema"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(|k| k.as_str())
+                .collect();
+            assert!(!props.is_empty() || t["name"].as_str().unwrap() != "lemmalog_observe");
+        }
+    }
 }
