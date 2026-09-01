@@ -128,6 +128,21 @@ claude mcp add lemmalog --env LEMMALOG_MCP_PATH=/tmp/lemmalog.snapshot -- \
   $(pwd)/target/release/lemmalog-mcp
 ```
 
+**Sub-agents that can't reach MCP** (Kimi CLI sub-agents need
+`mcp__lemmalog__*` in their agent profile's `tools` list — the bare
+`mcp__lemmalog` form matches nothing) and scripts/cron can use the
+headless CLI on the same snapshot:
+
+```sh
+LEMMALOG_MCP_PATH=/tmp/lemmalog.snapshot lemmalog-cli observe --facts 'S --rel--> O'
+LEMMALOG_MCP_PATH=/tmp/lemmalog.snapshot lemmalog-cli query --goal 'current("s", R, O)'
+```
+
+Mutations are visible to the MCP server on its next load and vice
+versa; the two hold separate in-process copies, so don't write from
+both simultaneously (have the parent read while a sub-agent writes, or
+route every writer through the CLI).
+
 The intended division of labor: the host model (Claude/Kimi) reads the
 conversation and asserts triples via `lemmalog_observe` (line protocol
 `S --rel[conf]--> O`); Lemmalog derives closures, temporal views,

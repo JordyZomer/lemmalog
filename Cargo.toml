@@ -17,6 +17,10 @@ required-features = ["mcp"]
 name = "lemmalog-bench"
 required-features = ["llm"]
 
+[[bin]]
+name = "lemmalog-cli"
+required-features = ["mcp"]
+
 [[example]]
 name = "lmstudio"
 required-features = ["llm"]

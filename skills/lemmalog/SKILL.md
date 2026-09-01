@@ -31,6 +31,14 @@ your context.
 - Persistence across sessions exists if `LEMMALOG_MCP_PATH` was set at
   registration; `lemmalog_save` forces a snapshot. Snapshots carry rule
   batches too — installed analyses survive restarts under their batch ids.
+- No MCP access (sub-agents that don't inherit MCP connections, scripts,
+  cron)? `lemmalog-cli` works on the SAME snapshot:
+  `LEMMALOG_MCP_PATH=... lemmalog-cli observe --facts 'S --rel--> O'`,
+  plus query/retract/context/why/rules/dump. Mutations are visible to
+  the MCP server on its next load and vice versa — but the two hold
+  separate in-process copies, so don't write from both at once: hand
+  sub-agents the CLI and keep the parent on it too, or have the parent
+  only read while a sub-agent writes.
 
 ## The discipline
 
