@@ -85,6 +85,8 @@ fn tools() -> J {
     json!([
         tool("lemmalog_observe",
             "Assert facts into memory (host model does extraction). Input: facts in the line protocol 'S --rel[conf]--> O', one per line; optional ts integer (default: engine clock). Example: 'Alice --works_at--> Acme\\nBob --manager--> Carol'."),
+        tool("lemmalog_retract",
+            "Retract facts that turned out to be WRONG (line protocol, same as observe). Open matching rows are removed and invalidation propagates: the response reports which derived facts died as a consequence. For a value that merely CHANGED, prefer re-asserting the same relation (the update policy supersedes)."),
         tool("lemmalog_query",
             "Query derived memory: a goal atom like 'reports_to(\"Alice\", Y)' or 'current(X, works_at, O)'. Returns variable bindings. Read-only."),
         tool("lemmalog_query_deep",
@@ -103,6 +105,8 @@ fn tools() -> J {
         tool("lemmalog_context",
             "Query-driven context assembly via hybrid retrieval: BM25 over facts and episodes + entity-match boosting, budget-aware. Input: query (natural language) + optional budget_tokens (default 1000). Returns relevance-selected facts and their verbatim source episodes — use this instead of lemmalog_dump when preparing a grounded answer."),
         tool("lemmalog_dump", "List facts of a predicate (or all) with confidence and provenance."),
+        tool("lemmalog_changes",
+            "Resync after a context reset or another agent's work: everything asserted, derived, or retracted since an epoch. Input: optional `since` epoch integer (default: 0 = everything, capped). The response carries the current epoch — checkpoint it and pass it back next time."),
         tool("lemmalog_save", "Persist memory to LEMMALOG_MCP_PATH."),
         tool("lemmalog_run", "Run one maintenance epoch (usually automatic)."),
     ])
@@ -123,7 +127,8 @@ fn tool(name: &str, desc: &str) -> J {
                 "pred": {"type": "string", "description": "predicate name"},
                 "ts": {"type": "integer", "description": "timestamp"},
                 "query": {"type": "string", "description": "natural-language query"},
-                "budget_tokens": {"type": "integer", "description": "context token budget"}
+                "budget_tokens": {"type": "integer", "description": "context token budget"},
+                "since": {"type": "integer", "description": "epoch checkpoint"}
             }
         }
     })
@@ -219,6 +224,81 @@ fn tool_call(
                 if dropped.len() > 5 {
                     out.push_str(&format!("\n  (+{} more)", dropped.len() - 5));
                 }
+            }
+            Ok(out)
+        }
+        "lemmalog_retract" => {
+            let facts = args["facts"].as_str().unwrap_or_default();
+            if facts.trim().is_empty() {
+                Err("input: `facts` is required — line-protocol facts to retract".to_string())
+            } else {
+                let (done, missing, died) = state.memory.retract_facts(facts);
+                let mut out = String::new();
+                if !done.is_empty() {
+                    out.push_str(&format!(
+                        "retracted {} fact(s); invalidation propagated:\n",
+                        done.len()
+                    ));
+                    if died.is_empty() {
+                        out.push_str("  no derived facts depended on them\n");
+                    } else {
+                        out.push_str(&format!(
+                            "  {} derived fact(s) died:\n",
+                            died.len()
+                        ));
+                        for d in died.iter().take(15) {
+                            out.push_str(&format!("    {d}\n"));
+                        }
+                        if died.len() > 15 {
+                            out.push_str(&format!("    (+{} more)\n", died.len() - 15));
+                        }
+                    }
+                }
+                if !missing.is_empty() {
+                    out.push_str(&format!(
+                        "not found (no open fact matches):\n  {}",
+                        missing.join("\n  ")
+                    ));
+                }
+                if done.is_empty() && missing.is_empty() {
+                    out.push_str(
+                        "nothing retracted — every line failed to parse \
+(strict validation: S --rel--> O with real entity names)",
+                    );
+                }
+                Ok(out)
+            }
+        }
+        "lemmalog_changes" => {
+            let since = args["since"].as_i64().unwrap_or(0).max(0) as u64;
+            let e = engine_of(state);
+            let events = e.changes_since(since);
+            let epoch = e.epoch();
+            let mut out = format!("epoch={epoch}\n");
+            if events.is_empty() {
+                out.push_str("no changes since that epoch");
+            } else {
+                let shown = events.len().min(200);
+                for ev in events.iter().take(shown) {
+                    match ev {
+                        lemmalog::eval::Change::Added(_, (p, k)) => {
+                            out.push_str(&format!("+ {}", e.render_fact(p, k)))
+                        }
+                        lemmalog::eval::Change::Retracted(_, (p, k)) => {
+                            out.push_str(&format!("- {}", e.render_fact(p, k)))
+                        }
+                        lemmalog::eval::Change::Cleared(_, p) => {
+                            out.push_str(&format!("- (cleared {p})"))
+                        }
+                    };
+                    out.push('\n');
+                }
+                if events.len() > shown {
+                    out.push_str(&format!("(+{} more)\n", events.len() - shown));
+                }
+                out.push_str(&format!(
+                    "checkpoint: pass since={epoch} next time"
+                ));
             }
             Ok(out)
         }
@@ -386,7 +466,7 @@ fn tool_call(
             if query.trim().is_empty() {
                 Err("input: `query` is required — the natural-language question the context should serve".to_string())
             } else {
-                Ok(state.memory.context_for_query(&query, budget))
+                Ok(state.memory.context_for_query_rich(&query, budget))
             }
         }
         "lemmalog_dump" => {

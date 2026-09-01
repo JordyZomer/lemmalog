@@ -27,7 +27,7 @@ use lemmalog::canonical;
 use lemmalog::eval::Engine;
 use lemmalog::intern::Value;
 use lemmalog::llm::{LlmClientExtractor, OpenAiClient};
-use lemmalog::retrieval::{tokenize_pub, Retrieval};
+use lemmalog::retrieval::{stem3, tokens3, topic_overlap, tokenize_pub, Retrieval};
 use lemmalog::semantics::Embedder as _;
 use serde_json::Value as J;
 use std::collections::BTreeMap;
@@ -409,40 +409,6 @@ fn is_counting_question(q: &str) -> bool {
         || l.contains(" least ")
 }
 
-/// Lenient plural stem for relevance matching: norm_token only folds
-/// plurals longer than 4 chars, so "owns" never met "own" and count
-/// lines were dropped exactly when they mattered.
-fn stem3(t: &str) -> String {
-    if t.len() >= 3 && t.ends_with('s') && !t.ends_with("ss") {
-        t[..t.len() - 1].to_string()
-    } else {
-        t.to_string()
-    }
-}
-
-fn tokens3(s: &str) -> std::collections::BTreeSet<String> {
-    tokenize_pub(s).into_iter().map(|t| stem3(&t)).collect()
-}
-
-/// Topic overlap between a fact row and a question, EXCLUDING the
-/// subject's own name tokens: a fact "Melanie --likes--> hiking" overlaps
-/// a question about Melanie only through its relation/object. This is
-/// what makes misattribution detectable — "grandma's gift to Melanie"
-/// scores 0 on Melanie's facts (the gift story is Caroline's).
-fn topic_overlap(line_tokens: &std::collections::BTreeSet<String>, subj: &str, qt: &std::collections::BTreeSet<String>) -> usize {
-    let subj_toks = tokens3(subj);
-    line_tokens
-        .iter()
-        .filter(|t| {
-            t.len() >= 3
-                && !subj_toks.contains(*t)
-                && qt.iter().any(|q| {
-                    q == *t || (q.len() >= 4 && t.len() >= 4 && (q.starts_with(t.as_str()) || t.starts_with(q.as_str())))
-                })
-        })
-        .count()
-}
-
 /// Facts whose relation/object content matches the question (excluding
 /// the subject name). Backs the refusal-retry: a retry is only offered
 /// when the store genuinely holds topic evidence. Lexical overlap OR
@@ -567,7 +533,7 @@ fn count_section(m: &mut AgentMemory<MockExtractor>, question: &str) -> String {
         let _ = m.maintain(now);
     }
     if std::env::var("LEMMALOG_DEBUG").is_ok() {
-        let preds: Vec<String> = m
+        let mut preds: Vec<String> = m
             .engine
             .relations
             .keys()
@@ -593,13 +559,14 @@ fn count_section(m: &mut AgentMemory<MockExtractor>, question: &str) -> String {
     let mut count_lines = 0;
     let user_sym = m.engine.sym("the_user");
     let qtokens = tokens3(question);
-    let preds: Vec<String> = m
+    let mut preds: Vec<String> = m
         .engine
         .relations
         .keys()
         .filter(|p| p.starts_with("cnt_"))
         .cloned()
         .collect();
+    preds.sort(); // HashMap order is seeded — sort for deterministic contexts
     for pred in &preds {
         for key in m.engine.relation_keys(pred) {
             if key.len() == 2 && key[0] == user_sym {
@@ -704,13 +671,14 @@ fn count_section(m: &mut AgentMemory<MockExtractor>, question: &str) -> String {
     // which store" is a grouped sum, which the aggregation engine
     // computes exactly
     let mut sum_lines = 0;
-    let sum_preds: Vec<String> = m
+    let mut sum_preds: Vec<String> = m
         .engine
         .relations
         .keys()
         .filter(|p| p.starts_with("sum_"))
         .cloned()
         .collect();
+    sum_preds.sort();
     for pred in &sum_preds {
         for key in m.engine.relation_keys(pred) {
             if key.len() == 2 && key[0] == user_sym {

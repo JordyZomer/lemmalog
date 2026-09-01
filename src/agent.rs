@@ -646,6 +646,206 @@ impl<X: Extractor> AgentMemory<X> {
         let sel = r.select(query, budget_tokens);
         r.render(&sel)
     }
+
+    /// Retract base facts given in the line protocol. Each open `edge`
+    /// row matching (S, R, O) is removed; `maintain()` then recomputes
+    /// the transitive dependents (scoped negative delta). Returns
+    /// (retracted lines, not-found lines, derived facts that died) —
+    /// the consequence report is the point: the caller sees exactly
+    /// what invalidation propagated.
+    pub fn retract_facts(
+        &mut self,
+        text: &str,
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let candidates = parse_protocol_strict(text, 0.9);
+        let mut done = Vec::new();
+        let mut missing = Vec::new();
+        for c in &candidates {
+            let subj = self.engine.sym(&c.subj);
+            let pred = self.engine.sym(&c.pred);
+            let obj = match c.obj.parse::<i64>() {
+                Ok(n) => Value::Int(n),
+                Err(_) => self.engine.sym(&c.obj),
+            };
+            let open: Vec<Vec<Value>> = self
+                .engine
+                .query("edge", &[Some(subj), Some(pred), Some(obj), None, None, None])
+                .into_iter()
+                .map(|(k, _)| k)
+                .filter(|k| matches!(k[4].as_int(), Some(vt) if vt == i64::MAX))
+                .collect();
+            if open.is_empty() {
+                missing.push(format!("{} --{}--> {}", c.subj, c.pred, c.obj));
+                continue;
+            }
+            for row in &open {
+                self.engine.retract("edge", row);
+            }
+            done.push(format!("{} --{}--> {}", c.subj, c.pred, c.obj));
+        }
+        if done.is_empty() {
+            return (done, missing, Vec::new());
+        }
+        // consequence report: snapshot derived relations before the
+        // recompute, diff after — scoped recompute logs predicate-level
+        // clears, so per-row feed events don't tell the story
+        let derived_preds: Vec<String> = self.engine.ever_derived.iter().cloned().collect();
+        let mut before: std::collections::BTreeMap<String, std::collections::BTreeSet<Vec<Value>>> =
+            std::collections::BTreeMap::new();
+        for p in &derived_preds {
+            before.insert(
+                p.clone(),
+                self.engine.relation_keys(p).into_iter().collect(),
+            );
+        }
+        let now = self.engine.now;
+        self.maintain(now);
+        let mut died = Vec::new();
+        for (p, old_keys) in &before {
+            let now_keys: std::collections::BTreeSet<Vec<Value>> =
+                self.engine.relation_keys(p).into_iter().collect();
+            for k in old_keys.difference(&now_keys) {
+                died.push(self.engine.render_fact(p, k));
+            }
+        }
+        (done, missing, died)
+    }
+
+    /// `context_for_query` plus the misattribution and supersession
+    /// sections: an ATTRIBUTION contrast (which subjects hold facts on
+    /// the question's topic — zero counts are the false-premise signal)
+    /// and, for current-state/value questions, the newest value per
+    /// slot with supersessions listed as history. Same facts, but the
+    /// reader cannot confuse Caroline's gift with Melanie's.
+    pub fn context_for_query_rich(&self, query: &str, budget_tokens: usize) -> String {
+        let mut base = self.context_for_query(query, budget_tokens);
+        let qt = crate::retrieval::tokens3(query);
+        // attribution contrast
+        {
+            let mut holders: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            let mut subjects: Vec<String> = Vec::new();
+            for key in self.engine.relation_keys("current") {
+                if key.len() != 3 {
+                    continue;
+                }
+                let subj = self.engine.interner.display(&key[0]).to_string();
+                if !subjects.contains(&subj) {
+                    subjects.push(subj.clone());
+                }
+                let line = format!(
+                    "{} --{}--> {}",
+                    subj,
+                    self.engine.interner.display(&key[1]),
+                    self.engine.interner.display(&key[2])
+                );
+                if crate::retrieval::topic_overlap(&crate::retrieval::tokens3(&line), &subj, &qt)
+                    >= 1
+                {
+                    *holders.entry(subj).or_insert(0) += 1;
+                }
+            }
+            let asked: Vec<String> = subjects
+                .iter()
+                .filter(|s| {
+                    crate::retrieval::tokens3(s)
+                        .iter()
+                        .any(|t| t.len() >= 3 && qt.contains(t))
+                })
+                .cloned()
+                .collect();
+            let zero: Vec<String> = asked
+                .iter()
+                .filter(|s| !holders.contains_key(*s))
+                .cloned()
+                .collect();
+            if !holders.is_empty() || !zero.is_empty() {
+                let mut sec = String::from(
+                    "\nATTRIBUTION (who holds facts on this question's topic, by subject):\n",
+                );
+                let mut pairs: Vec<_> = holders.iter().collect();
+                pairs.sort_by(|a, b| b.1.cmp(a.1));
+                for (s, n) in pairs.iter().take(6) {
+                    sec.push_str(&format!("  {s}: {n} topic facts\n"));
+                }
+                if !zero.is_empty() {
+                    sec.push_str(&format!(
+                        "  NO topic facts for: {} (mentioned in the question)\n",
+                        zero.join(", ")
+                    ));
+                }
+                base.push_str(&sec);
+            }
+        }
+        // latest values per slot (supersession history)
+        let q_lower = query.to_lowercase();
+        if q_lower.contains("current")
+            || q_lower.contains(" now")
+            || q_lower.contains("latest")
+            || q_lower.contains("amount")
+            || q_lower.contains("price")
+            || q_lower.contains("how much")
+            || q_lower.contains("value")
+        {
+            let mut slots: std::collections::BTreeMap<(String, String), Vec<(i64, String)>> =
+                std::collections::BTreeMap::new();
+            for key in self.engine.relation_keys("edge") {
+                if key.len() != 6 {
+                    continue;
+                }
+                let subj = self.engine.interner.display(&key[0]).to_string();
+                let rel = self.engine.interner.display(&key[1]).to_string();
+                let line = format!("{subj} --{rel}--> {}", self.engine.interner.display(&key[2]));
+                if !crate::retrieval::tokens3(&line)
+                    .iter()
+                    .any(|t| t.len() >= 3 && qt.contains(t))
+                {
+                    continue;
+                }
+                let vf = key[3].as_int().unwrap_or(0);
+                if vf == i64::MAX {
+                    continue;
+                }
+                slots
+                    .entry((subj, rel))
+                    .or_default()
+                    .push((vf, self.engine.interner.display(&key[2]).to_string()));
+            }
+            let mut sec = String::from(
+                "\nCURRENT STATE (latest value per slot; superseded values listed as history):\n",
+            );
+            let mut lines = 0;
+            for ((subj, rel), mut vals) in slots {
+                if lines >= 8 {
+                    break;
+                }
+                vals.sort_by(|a, b| b.0.cmp(&a.0));
+                let distinct: Vec<String> = vals
+                    .iter()
+                    .map(|(_, v)| v.clone())
+                    .fold(Vec::new(), |mut acc: Vec<String>, v| {
+                        if !acc.contains(&v) {
+                            acc.push(v);
+                        }
+                        acc
+                    });
+                if distinct.len() < 2 {
+                    continue;
+                }
+                let older: Vec<String> = distinct.iter().skip(1).take(3).cloned().collect();
+                sec.push_str(&format!(
+                    "  {subj} --{rel}--> {} (current; superseded: {})\n",
+                    distinct[0],
+                    older.join(", ")
+                ));
+                lines += 1;
+            }
+            if lines > 0 {
+                base.push_str(&sec);
+            }
+        }
+        base
+    }
 }
 
 // ------------------------------------------------------ context assembler

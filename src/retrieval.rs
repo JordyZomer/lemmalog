@@ -18,6 +18,43 @@ pub fn tokenize_pub(s: &str) -> Vec<String> {
     tokenize(s)
 }
 
+/// Lenient plural stem for relevance matching: norm_token only folds
+/// plurals longer than 4 chars, so "owns" never met "own" and count
+/// lines were dropped exactly when they mattered.
+pub fn stem3(t: &str) -> String {
+    if t.len() >= 3 && t.ends_with('s') && !t.ends_with("ss") {
+        t[..t.len() - 1].to_string()
+    } else {
+        t.to_string()
+    }
+}
+
+/// Tokenize + lenient stem, as a set.
+pub fn tokens3(s: &str) -> std::collections::BTreeSet<String> {
+    tokenize(s).into_iter().map(|t| stem3(&t)).collect()
+}
+
+/// Topic overlap between a fact line and a question, EXCLUDING the
+/// subject's own name tokens: a fact "Melanie --likes--> hiking" overlaps
+/// a question about Melanie only through its relation/object. This is
+/// what makes misattribution detectable — "grandma's gift to Melanie"
+/// scores 0 on Melanie's facts (the gift story is Caroline's). Near-token
+/// prefix matching ("painted" ~ "paint") included.
+pub fn topic_overlap(line_tokens: &std::collections::BTreeSet<String>, subj: &str, qt: &std::collections::BTreeSet<String>) -> usize {
+    let subj_toks = tokens3(subj);
+    line_tokens
+        .iter()
+        .filter(|t| {
+            t.len() >= 3
+                && !subj_toks.contains(*t)
+                && qt.iter().any(|q| {
+                    q.as_str() == t.as_str()
+                        || (q.len() >= 4 && t.len() >= 4 && (q.starts_with(t.as_str()) || t.starts_with(q.as_str())))
+                })
+        })
+        .count()
+}
+
 /// Light stemming so question vocabulary meets fact vocabulary:
 /// plurals fold ("airlines" -> "airline") and a small irregular-form map
 /// covers the verbs user-life questions use ("flew"/"flying" -> "fly").

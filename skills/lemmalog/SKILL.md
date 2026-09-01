@@ -65,15 +65,22 @@ your context.
    `status(H, proposed|supported|refuted|validated)` and evidence links.
    Test counterfactuals with `lemmalog_what_if` — temporary facts,
    answered goal, store untouched.
-6. **Reconcile vocabulary, don't enforce it.** Name things naturally;
+6. **Correct by retracting.** When you learn an asserted fact was
+   wrong — not changed, wrong — `lemmalog_retract` it: the response
+   lists every derived conclusion that died with it, so the repair is
+   visible, not silent. (A value that merely changed is re-asserted
+   under the same relation; see "State that changes".) After a context
+   reset or another agent's turn, `lemmalog_changes` with your last
+   epoch resyncs you without re-reading the store.
+7. **Reconcile vocabulary, don't enforce it.** Name things naturally;
    when two names mean one thing, `local --alias_of[conf]--> canonical`
    via `lemmalog_canonicalize`. Conflicts surface as `alias_conflict`
    facts; they never silently merge.
-7. **Decide from queries.** Derive candidate views — unexplored items,
+8. **Decide from queries.** Derive candidate views — unexplored items,
    blocked-by-what, what-needs-attention — and choose among them. The
    queries propose; you dispose (including off-list when judgment says
    so). Then assert the decision so state stays complete.
-8. **Report from the engine.** Final deliverables render from queries and
+9. **Report from the engine.** Final deliverables render from queries and
    `why` trees, not from memory. A conclusion's confidence is the product
    of its edges (the engine multiplies down the proof chain) — deep
    derivations need high-confidence inputs to stay believable.

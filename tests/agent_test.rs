@@ -399,3 +399,52 @@ fn bare_numbers_through_the_protocol_become_integers() {
     );
     assert_eq!(m.ask("big_spender(S)").unwrap().len(), 1);
 }
+
+#[test]
+fn retract_propagates_through_derived_closures() {
+    let mut m = AgentMemory::<MockExtractor>::new(MockExtractor::new(0.9), "").unwrap();
+    m.observe_extracted(
+        "alice --manager--> bob\nbob --manager--> carol\ncarol --manager--> dana",
+        100,
+    );
+    m.install_rules(
+        "reports_to(X,Y) :- current(X,\"manager\",Y).\ntrans: reports_to(X,Z) :- reports_to(X,Y), reports_to(Y,Z).",
+    )
+    .unwrap();
+    m.maintain(100);
+    // alice reaches bob, carol, dana through the closure
+    assert_eq!(m.ask("reports_to(\"alice\", X)").unwrap().len(), 3);
+    // the middle edge was wrong — retract it and the closure must repair
+    let (done, missing, died) = m.retract_facts("bob --manager--> carol");
+    assert!(missing.is_empty(), "{missing:?}");
+    assert_eq!(done.len(), 1);
+    assert!(
+        died.iter().any(|l| l.contains("reports_to")),
+        "consequence report lists dead derivations: {died:?}"
+    );
+    let remaining = m.ask("reports_to(\"alice\", X)").unwrap();
+    assert_eq!(remaining.len(), 1, "closure repaired: {remaining:?}");
+    // a second retract of the same fact is a loud not-found, not a silent no-op
+    let (_, missing2, _) = m.retract_facts("bob --manager--> carol");
+    assert_eq!(missing2.len(), 1);
+}
+
+#[test]
+fn rich_context_carries_attribution_and_latest_values() {
+    let mut m = AgentMemory::<MockExtractor>::new(MockExtractor::new(0.9), "").unwrap();
+    m.observe_extracted(
+        "caroline --received_necklace_from--> grandma\nmelanie --paints--> landscapes",
+        100,
+    );
+    m.observe_extracted("melanie --paints--> portraits", 200);
+    m.maintain(200);
+    let ctx = m.context_for_query_rich("What was grandma's gift to Melanie?", 400);
+    assert!(ctx.contains("ATTRIBUTION"), "{ctx}");
+    assert!(ctx.to_lowercase().contains("no topic facts for: melanie"), "{ctx}");
+    let ctx2 = m.context_for_query_rich("What is the latest amount Melanie charges?", 400);
+    assert!(ctx2.contains("CURRENT STATE"), "{ctx2}");
+    assert!(
+        ctx2.contains("superseded: landscapes") || ctx2.contains("paints"),
+        "{ctx2}"
+    );
+}
