@@ -29,7 +29,8 @@ your context.
   lemmalog repo). If they are absent, tell the user the one-line
   registration command and continue without memory — never block the task.
 - Persistence across sessions exists if `LEMMALOG_MCP_PATH` was set at
-  registration; `lemmalog_save` forces a snapshot.
+  registration; `lemmalog_save` forces a snapshot. Snapshots carry rule
+  batches too — installed analyses survive restarts under their batch ids.
 
 ## The discipline
 
@@ -73,8 +74,9 @@ your context.
    queries propose; you dispose (including off-list when judgment says
    so). Then assert the decision so state stays complete.
 8. **Report from the engine.** Final deliverables render from queries and
-   `why` trees, not from memory. A conclusion's confidence is its minimum
-   edge confidence.
+   `why` trees, not from memory. A conclusion's confidence is the product
+   of its edges (the engine multiplies down the proof chain) — deep
+   derivations need high-confidence inputs to stay believable.
 
 ## Schema conventions
 
@@ -89,6 +91,34 @@ status(H, S)                  % proposed|supported|refuted|validated
 evidence(H, Fact)             % link a hypothesis to its supporting facts
 decision(Id, What)            % choices made, so state stays complete
 ```
+
+## State that changes
+
+Values, quantities, and sets evolve — assert them so the engine can
+maintain them (these conventions are what the update policy and the
+aggregates need):
+
+- **Update by re-asserting the same relation.** When a value changes,
+  assert the new value under the SAME relation name: the policy
+  supersedes the old fact automatically. Never invent a synonym
+  relation for the new value (`uses` → `switched_to`) — that leaves
+  both values open, and every current-state query gets flaky. If you
+  need the history, the superseded fact is still queryable by its
+  validity interval.
+- **Bare numbers are integers.** `launch --monthly_cost--> 120` (never
+  `$120` or `120 dollars`) — digit-only objects feed `sum`/`count`
+  aggregates and `<`/`>=` comparisons. Mixed forms are opaque symbols.
+- **Bare dates order correctly.** `moved_on` with `YYYY-MM-DD` (or
+  `YYYY-MM`) objects; derive orderings with a rule
+  (`earlier(A, B) :- on(A, D1), on(B, D2), D1 < D2`) rather than
+  judging from prose.
+- **Evolving sets: one fact per item, plus lifecycle verbs.** Track a
+  watchlist/checklist as `added(X)` per item and `watched(X)`/`done(X)`
+  when consumed; current membership is then a rule —
+  `pending(X) :- added(X), !watched(X).` — not something you recount.
+- **Conditional preferences stay conditional.**
+  `prefers_when(user, lively, with_friends)` — never assert the
+  condition itself as a fact unless the source says it holds now.
 
 ## Grammar
 
@@ -115,6 +145,9 @@ decision(Id, What)            % choices made, so state stays complete
 - Trusting derived facts without `why`.
 - Re-deriving in context what the engine already closes.
 - Letting two names for one thing drift (alias them).
+- Renaming a relation when its value changes (supersede, don't fork).
+- Numbers or dates buried in prose objects ("about $50", "last March")
+  — bare values are what the engine can aggregate and order.
 
 ## Boundary
 

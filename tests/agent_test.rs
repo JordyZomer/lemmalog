@@ -378,3 +378,24 @@ fn batch_ids_never_collide_across_uninstall() {
     assert!(!remaining.contains(&b2), "{remaining:?}");
     assert!(remaining.contains(&b3), "{remaining:?}");
 }
+
+#[test]
+fn bare_numbers_through_the_protocol_become_integers() {
+    let mut m = AgentMemory::<MockExtractor>::new(MockExtractor::new(0.9), "").unwrap();
+    m.observe_extracted(
+        "launch --monthly_cost--> 120\nlaunch --name--> Apollo\nlaunch --monthly_cost--> 60\n",
+        100,
+    );
+    m.maintain(100);
+    // sum aggregation and comparison only work over integers — symbol
+    // "120" would derive nothing
+    m.install_rules("total_cost(S, sum(N)) :- current(S, \"monthly_cost\", N).\nbig_spender(S) :- total_cost(S, C), C >= 150.")
+        .unwrap();
+    m.maintain(100);
+    assert_eq!(
+        m.ask("total_cost(\"launch\", T)").unwrap(),
+        vec!["T=180".to_string()],
+        "digit objects aggregate as integers"
+    );
+    assert_eq!(m.ask("big_spender(S)").unwrap().len(), 1);
+}

@@ -396,7 +396,15 @@ impl<X: Extractor> AgentMemory<X> {
     fn apply_update(&mut self, c: &CandidateFact, ep: &Episode, report: &mut IngestReport) {
         let subj = self.engine.sym(&c.subj);
         let pred = self.engine.sym(&c.pred);
-        let obj = self.engine.sym(&c.obj);
+        // digit-only objects become integers: quantities and amounts
+        // asserted through the line protocol must feed `sum`/`count`
+        // aggregates and `<`/`>` comparisons, which symbols cannot.
+        // Mixed-form tokens (dates "2023-05-14", "$50", ids with dashes)
+        // stay symbols.
+        let obj = match c.obj.parse::<i64>() {
+            Ok(n) => Value::Int(n),
+            Err(_) => self.engine.sym(&c.obj),
+        };
         let open: Vec<Vec<Value>> = self
             .engine
             .query("edge", &[Some(subj), Some(pred), None, None, None, None])
@@ -547,12 +555,16 @@ impl<X: Extractor> AgentMemory<X> {
         let extras: Vec<(String, Vec<Value>)> = candidates
             .iter()
             .map(|c| {
+                let obj = match c.obj.parse::<i64>() {
+                    Ok(n) => Value::Int(n),
+                    Err(_) => self.engine.sym(&c.obj),
+                };
                 (
                     "edge".to_string(),
                     vec![
                         self.engine.sym(&c.subj),
                         self.engine.sym(&c.pred),
-                        self.engine.sym(&c.obj),
+                        obj,
                         Value::Int(now),
                         Value::Int(i64::MAX),
                         Value::Int(now),
