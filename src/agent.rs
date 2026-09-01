@@ -105,11 +105,22 @@ fn entity_token_problem(s: &str) -> Option<String> {
         ))
     } else if s.len() > 60 || s.split_whitespace().count() > 8 {
         Some("looks like prose (more than 8 words) — entity names are short".to_string())
+    } else if !s.chars().any(|c| c.is_whitespace()) && s.len() <= 60 {
+        // a single token accepts all printable characters: kernel-code
+        // facts need `*pmap`, `entry->next`, `MAP_FIXED|MAP_ANON`,
+        // `vm_fault_entry()` — and since the line protocol already
+        // parsed the line, a `-->` can't be hiding inside. Punctuation
+        // plus SPACES remains the leaked-deliberation signature below.
+        if s.chars().all(|c| c.is_ascii_graphic()) {
+            None
+        } else {
+            Some("contains control characters".to_string())
+        }
     } else if !s
         .chars()
         .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '\'' | ' ' | '/' | '.' | ':' | '#'))
     {
-        Some("contains punctuation or prose characters — entity names use letters, digits, '_', '-', apostrophes, and '/', '.', ':', '#' in source references".to_string())
+        Some("contains punctuation or prose characters — space-free tokens may use any printable characters; spaced names use letters, digits, '_', '-', apostrophes, and '/', '.', ':', '#'".to_string())
     } else if s.contains(' ') && s.chars().any(|c| matches!(c, '/' | '.' | ':' | '#')) {
         // Path characters are allowed so that source references
         // (`src/agent.rs:118`) can be entities, but only as single tokens:
@@ -429,8 +440,27 @@ impl<X: Extractor> AgentMemory<X> {
             report.noop += 1;
             return;
         }
-        let exclusive = !self.engine.query("exclusive", &[Some(pred)]).is_empty();
-        if exclusive {
+        // relation semantics by name: naturally multi-valued relations
+        // accumulate silently (escalating on every `evidence` add taught
+        // agents to fight the store); naturally functional ones
+        // supersede without needing an explicit `exclusive()` declare
+        // (without this, status(H, supported) left status(H, proposed)
+        // open too — both "true" at once)
+        const MULTI: [&str; 15] = [
+            "evidence", "mentions", "located", "describes", "tag",
+            "related_to", "depends_on", "owns", "calls", "part_of",
+            "source", "cites", "symptom_of", "aka", "alias_of",
+        ];
+        const FUNCTIONAL: [&str; 7] = [
+            "status", "phone", "address", "email", "version", "value_of",
+            "current_value",
+        ];
+        let pred_name = self.engine.interner.display(&pred).to_string();
+        let multi = MULTI.iter().any(|m| pred_name.starts_with(m));
+        let functional = FUNCTIONAL.iter().any(|f| pred_name.starts_with(f));
+        let exclusive = functional
+            || !self.engine.query("exclusive", &[Some(pred)]).is_empty();
+        if exclusive && !multi {
             for old in &open {
                 let mut closed = old.clone();
                 closed[4] = Value::Int(self.engine.now);
@@ -439,6 +469,9 @@ impl<X: Extractor> AgentMemory<X> {
             }
             self.assert_open(&[subj, pred, obj], c.confidence, &ep.id);
             report.updated += 1;
+        } else if multi {
+            self.assert_open(&[subj, pred, obj], c.confidence, &ep.id);
+            report.added += 1;
         } else {
             self.assert_open(&[subj, pred, obj], c.confidence, &ep.id);
             let others: Vec<String> = open

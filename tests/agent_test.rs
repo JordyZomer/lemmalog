@@ -448,3 +448,54 @@ fn rich_context_carries_attribution_and_latest_values() {
         "{ctx2}"
     );
 }
+
+#[test]
+fn kernel_code_facts_surive_strict_validation() {
+    // the VR session dropped ~15 lines to token constraints: C syntax
+    // in entities must pass as long as it is a single token
+    let facts = "vme --field_type--> struct vm_map_entry\n\
+                 pmap_list --head--> *pmap\n\
+                 flags --requires--> MAP_FIXED|MAP_ANON\n\
+                 entry --links--> entry->links\n\
+                 vm_map --lookup--> vm_map_lookup_entry()\n\
+                 page --addr_flags--> &vm_page[0]";
+    let m = AgentMemory::<MockExtractor>::new(MockExtractor::new(0.9), "").unwrap();
+    let parsed = lemmalog::agent::parse_protocol_strict(facts, 0.9);
+    assert_eq!(parsed.len(), 6, "all C-syntax facts parse: {parsed:?}");
+    // leaked deliberation still dies: spaces + punctuation
+    let bad = "x --note--> see the function at vm_map.c, around line 118";
+    assert_eq!(lemmalog::agent::parse_protocol_strict(bad, 0.9).len(), 0);
+}
+
+#[test]
+fn functional_relations_supersede_and_multi_accumulate_silently() {
+    let mut m = AgentMemory::<MockExtractor>::new(MockExtractor::new(0.9), "").unwrap();
+    // status is functional: a new status must REPLACE, not join, the old
+    m.observe_extracted("hyp_1 --status--> proposed", 100);
+    let (r1, _) = m.observe_extracted("hyp_1 --status--> supported", 200);
+    m.maintain(200);
+    assert_eq!(r1.escalations.len(), 0, "no conflict noise on status");
+    assert_eq!(r1.updated, 1, "supersede counts as update");
+    let open: Vec<_> = m
+        .engine
+        .query("edge", &[None, None, None, None, None, None])
+        .into_iter()
+        .map(|(k, _)| k)
+        .filter(|k| {
+            m.engine.interner.display(&k[1]) == "status"
+                && matches!(k[4].as_int(), Some(vt) if vt == i64::MAX)
+        })
+        .collect();
+    assert_eq!(open.len(), 1, "exactly one open status: {open:?}");
+    // evidence is multi-valued: every add accumulates without escalation.
+    // Evidence objects take the protocol shapes: a bare source reference
+    // (space-free) or a punctuation-free phrase — spaced prose with
+    // reference punctuation stays dropped (deliberation guard)
+    let (r2, _) = m.observe_extracted(
+        "hyp_1 --evidence--> vhost.c:3052\nhyp_1 --evidence--> regression test fails",
+        300,
+    );
+    assert_eq!(r2.escalations.len(), 0, "evidence adds silently");
+    m.maintain(300);
+    assert_eq!(m.ask("current(\"hyp_1\", \"evidence\", E)").unwrap().len(), 2);
+}

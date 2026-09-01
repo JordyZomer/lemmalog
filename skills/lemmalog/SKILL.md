@@ -72,8 +72,9 @@ your context.
    shows which asserted edges carry it; a chain is only as good as its
    lowest-confidence edge. Re-verify the weakest edges against their
    `located` anchors.
-5. **Hypotheses have lifecycles.** `hypothesis(H, "claim")` plus
-   `status(H, proposed|supported|refuted|validated)` and evidence links.
+5. **Hypotheses have lifecycles.** `H --hypothesis--> claim`,
+   `H --status--> proposed|supported|refuted|validated` (supersedes),
+   `H --evidence--> ref` (accumulates).
    Test counterfactuals with `lemmalog_what_if` — temporary facts,
    answered goal, store untouched.
 6. **Correct by retracting.** When you learn an asserted fact was
@@ -101,14 +102,22 @@ your context.
 The only shared vocabulary (everything else: invent precisely, and assert
 `describes(Relation, "one-line meaning")` so others discover it):
 
+All asserted through the line protocol (the predicate forms below are
+descriptions, not assertable syntax):
+
 ```text
-located(Entity, "ref")        % evidence anchor for anything in a source
-describes(Relation, "what")   % self-documenting schema
-hypothesis(H, "claim")        % lifecycle-tracked claims
-status(H, S)                  % proposed|supported|refuted|validated
-evidence(H, Fact)             % link a hypothesis to its supporting facts
-decision(Id, What)            % choices made, so state stays complete
+kernel_func --located--> vm/vm_map.c:3052     % evidence anchor (multi-valued)
+works_at --describes--> person is employed at % self-documenting schema
+hyp_1 --hypothesis--> claim in plain words    % lifecycle-tracked claim
+hyp_1 --status--> proposed                    % supersedes on change:
+                                              % proposed|supported|refuted|validated
+hyp_1 --evidence--> vm_map.c:3052            % multi-valued: accumulates
+decision_7 --decision--> chose scope X because Y
 ```
+
+Evidence objects take a bare source reference (space-free) or a
+punctuation-free phrase; spaces plus punctuation read as leaked prose
+and are dropped.
 
 ## State that changes
 
@@ -171,4 +180,13 @@ aggregates need):
 
 Stays in your head: in-flight reading, semantic judgment.
 Must land in the engine: conclusions, state changes, decisions — before
-you move on.
+you move on — and dead ends most of all: a searched-and-ruled-out
+avenue is the most valuable thing a future agent can inherit (`X
+--dead_end--> why it failed, where confirmed`). Assert them in bulk —
+one observe call, one line each; fifty at once is fine.
+
+Scope honesty: for a short task that fits one context window, working
+memory in your head is cheaper — lemmalog pays when state must outlive
+a window, span agents, or survive a restart. A single-session audit
+with four items to track is overhead; a multi-day investigation or a
+swarm reading each other's dead-ends is the payoff case.

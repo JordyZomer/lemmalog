@@ -15,3 +15,6 @@ lme-ctx/
 
 # macOS
 .DS_Store
+
+# per-snapshot embedding caches (benchmark iteration)
+*.snap.embed.json
