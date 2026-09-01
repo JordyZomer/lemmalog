@@ -54,9 +54,12 @@ your context.
    not-X-reachable questions go through rules and `lemmalog_query` —
    never mental closure, and never re-deriving what a prior agent derived.
    For grounded answering, `lemmalog_context` retrieves the question-relevant
-   facts plus their verbatim source episodes under a token budget — use it
-   instead of `lemmalog_dump` when preparing answers; selection beats
-   dumping.
+   facts plus their verbatim source episodes under a token budget, with an
+   attribution contrast (which subjects hold facts on the topic — a
+   question-mentioned party with zero topic facts is a false-premise
+   signal) and, for current-state questions, the latest value per slot
+   with supersessions as history — use it instead of `lemmalog_dump` when
+   preparing answers; selection beats dumping.
 4. **`lemmalog_why` before trusting any derived fact.** The proof tree
    shows which asserted edges carry it; a chain is only as good as its
    lowest-confidence edge. Re-verify the weakest edges against their
