@@ -59,7 +59,7 @@ fn main() {
             "initialize" => Ok(json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "lemmalog", "version": "0.1.0"},
+                "serverInfo": {"name": "lemmalog", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": SERVER_INSTRUCTIONS
             })),
             "tools/list" => Ok(json!({"tools": tools()})),

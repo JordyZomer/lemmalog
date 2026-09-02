@@ -1,6 +1,6 @@
 [package]
 name = "lemmalog"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A Datalog engine for LLM context management: bi-temporal, provenance-annotated, incrementally maintained."
 license = "MIT"
