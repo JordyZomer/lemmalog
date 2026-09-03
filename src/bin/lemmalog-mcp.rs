@@ -667,7 +667,8 @@ fn tool_call(
     if !is_error
         && matches!(
             name,
-            "lemmalog_observe" | "lemmalog_install_rules" | "lemmalog_uninstall" | "lemmalog_canonicalize"
+            "lemmalog_observe" | "lemmalog_retract" | "lemmalog_install_rules"
+                | "lemmalog_uninstall" | "lemmalog_canonicalize"
         )
     {
         if let Some(p) = path {
