@@ -294,6 +294,48 @@ fn observe_extracted_applies_policy_and_reports_drops() {
     );
 }
 
+/// Regression: moving the clock does not refresh temporal views on its own.
+///
+/// Seminaive evaluation fires a rule only for facts in the epoch delta, so a
+/// `now(T)` view like `current/3` keeps answering as of the clock that was
+/// set when each edge arrived. Production hit this from the other side: a
+/// backdated batch rewound the clock, and every fact whose VF was later
+/// silently stopped projecting — still in `edge`, absent from `current`, and
+/// no amount of re-running maintenance brought it back. `invalidate_derived`
+/// is the documented escape hatch, and the MCP read paths call it via
+/// `sync_clock`.
+#[test]
+fn seminaive_does_not_refresh_now_rules_without_invalidation() {
+    let mut m = mem("");
+    // valid from t=2000, but derived while the clock sits at 1000
+    m.observe_extracted("late --relates_to--> ticket", 2000);
+    m.maintain(1000);
+    assert!(
+        m.ask("current(\"late\", R, O)").unwrap().is_empty(),
+        "VF=2000 must not project at clock 1000"
+    );
+    // the edge is resident either way
+    assert_eq!(m.ask("edge(\"late\", R, O, VF, VT, TS)").unwrap().len(), 1);
+
+    // Pins current design, not a requirement: advancing the clock alone
+    // leaves the view stale because there is no delta to fire on. If
+    // `set_now` ever learns to invalidate when clock-dependent rules exist,
+    // delete this assertion — the two around it are the regression guard.
+    m.maintain(3000);
+    assert!(
+        m.ask("current(\"late\", R, O)").unwrap().is_empty(),
+        "clock advance alone does not refresh — this is why invalidate_derived exists"
+    );
+
+    // invalidation re-seeds the delta and the view catches up
+    m.engine.invalidate_derived();
+    m.maintain(3000);
+    assert_eq!(
+        m.ask("current(\"late\", R, O)").unwrap().len(),
+        1,
+        "after invalidation the fact projects at clock 3000"
+    );
+}
 #[test]
 fn source_references_are_valid_entities() {
     use lemmalog::agent::parse_protocol_reported;

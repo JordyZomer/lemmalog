@@ -161,6 +161,13 @@ aggregates need):
   `lemmalog_query` before building on it.
 - Rule syntax: `head(X, Y) :- atom(X, Y), X \= Z.` with `!atom` negation,
   `now(T)`, comparisons, arithmetic; aggregates only in heads.
+- Time is bitemporal, and the two clocks are separate. `ts` on
+  `lemmalog_observe` is the **valid-from** time of the facts in that call;
+  `now(T)` in a rule is the reader's present, synced to the wall clock on
+  every read. So backdating a batch is safe — it dates those facts without
+  hiding anything asserted after them. Omit `ts` unless the facts really
+  are about the past, and give one call one coherent timestamp rather than
+  mixing eras in a single batch.
 - Errors are actionable: every `isError` result carries the offending
   input, the reason, and a hint — fix and resend; `lemmalog_observe`
   reports dropped lines with reasons, so a zero-add result is loud, not

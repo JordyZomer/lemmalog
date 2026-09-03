@@ -510,6 +510,24 @@ impl Engine {
         self.now = now;
     }
 
+    /// Force a full re-derivation on the next `run()`.
+    ///
+    /// Seminaive evaluation fires a rule only for facts in the epoch delta,
+    /// so moving `now` alone never re-fires `now(T)` rules over facts that
+    /// are already resident: a temporal view like
+    /// `current(E,R,O) :- edge(E,R,O,VF,VT,_), now(T), VF =< T, T < VT.`
+    /// keeps answering as of the clock that was set when each edge arrived.
+    /// Callers that advance the clock and need the view to follow must
+    /// invalidate first. Cost is a full recompute, so this belongs on paths
+    /// that run once per agent turn — reads, clock syncs, and the MCP
+    /// `observe` handler. Never call it inside a bulk replay loop
+    /// (`lemmalog-bench` ingest): one recompute per episode is quadratic in
+    /// corpus size, and a replay that feeds timestamps in order does not
+    /// need it.
+    pub fn invalidate_derived(&mut self) {
+        self.program_dirty = true;
+    }
+
     // ----------------------------------------------------------- stratify
 
     /// Stratum assignment: depth(p) = max over rules defining p of
